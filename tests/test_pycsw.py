@@ -1,0 +1,186 @@
+"""Unit tests for titiler.pycsw (pycsw STAC API mocked with respx)."""
+
+import json
+
+import httpx
+import respx
+
+from titiler.pycsw.client import PyCSWSTACClient
+from titiler.pycsw.dependencies import PyCSWQueryParams
+
+STAC_URL = "http://pycsw.test/stac"
+
+ITEM = {
+    "type": "Feature",
+    "stac_version": "1.0.0",
+    "id": "scene-1",
+    "collection": "my-collection",
+    "bbox": [0, 0, 10, 10],
+    "geometry": {
+        "type": "Polygon",
+        "coordinates": [[[0, 0], [10, 0], [10, 10], [0, 10], [0, 0]]],
+    },
+    "properties": {"datetime": "2021-01-01T00:00:00Z"},
+    "assets": {"cog": {"href": "s3://bucket/scene-1.tif"}},
+}
+
+FEATURE_COLLECTION = {"type": "FeatureCollection", "features": [ITEM]}
+
+
+@respx.mock
+def test_client_get_search_builds_params():
+    """A spatial-only search uses GET and encodes bbox/sortby/limit."""
+    route = respx.get(f"{STAC_URL}/search").mock(
+        return_value=httpx.Response(200, json=FEATURE_COLLECTION)
+    )
+
+    client = PyCSWSTACClient(STAC_URL, client=httpx.Client())
+    features = client.search(
+        bbox=(0, 0, 10, 10),
+        collections=["my-collection"],
+        sortby="-datetime",
+        limit=50,
+    )
+
+    assert len(features) == 1
+    assert features[0]["id"] == "scene-1"
+
+    request = route.calls.last.request
+    assert request.method == "GET"
+    assert request.url.params["bbox"] == "0,0,10,10"
+    assert request.url.params["collections"] == "my-collection"
+    assert request.url.params["sortby"] == "-datetime"
+    assert request.url.params["limit"] == "50"
+
+
+@respx.mock
+def test_client_post_search_when_filter():
+    """A CQL2 filter switches the search to POST with a JSON body."""
+    route = respx.post(f"{STAC_URL}/search").mock(
+        return_value=httpx.Response(200, json=FEATURE_COLLECTION)
+    )
+
+    client = PyCSWSTACClient(STAC_URL, client=httpx.Client())
+    cql2 = {"op": "=", "args": [{"property": "eo:cloud_cover"}, 0]}
+    features = client.search(bbox=(0, 0, 10, 10), filter=cql2, sortby="-datetime")
+
+    assert len(features) == 1
+    request = route.calls.last.request
+    assert request.method == "POST"
+    body = json.loads(request.content)
+    assert body["filter"] == cql2
+    assert body["filter-lang"] == "cql2-json"
+    assert body["bbox"] == [0, 0, 10, 10]
+    assert body["sortby"] == [{"field": "datetime", "direction": "desc"}]
+
+
+@respx.mock
+def test_backend_get_assets_returns_items():
+    """The mosaic backend returns STAC item dicts from a bbox search."""
+    from titiler.pycsw.backend import PyCSWBackend
+
+    respx.get(f"{STAC_URL}/search").mock(
+        return_value=httpx.Response(200, json=FEATURE_COLLECTION)
+    )
+
+    client = PyCSWSTACClient(STAC_URL, client=httpx.Client())
+    with PyCSWBackend(client=client) as backend:
+        # unique bbox to avoid the module-level TTLCache from other tests
+        assets = backend.get_assets(
+            1.111, 2.222, 3.333, 4.444, query={"collections": ["my-collection"]}
+        )
+
+    assert len(assets) == 1
+    assert assets[0]["assets"]["cog"]["href"] == "s3://bucket/scene-1.tif"
+
+
+def test_query_params_dependency_parses_inputs():
+    """PyCSWQueryParams parses CSV lists and CQL2-JSON filter strings."""
+    query = PyCSWQueryParams(
+        collections="c1,c2",
+        ids="a,b",
+        datetime="2021-01-01T00:00:00Z/..",
+        filter=json.dumps({"op": "=", "args": [{"property": "x"}, 1]}),
+        sortby="-datetime",
+    )
+
+    assert query["collections"] == ["c1", "c2"]
+    assert query["ids"] == ["a", "b"]
+    assert query["datetime"] == "2021-01-01T00:00:00Z/.."
+    assert query["filter"]["op"] == "="
+    assert query["filter_lang"] == "cql2-json"
+    assert query["sortby"] == "-datetime"
+
+
+def test_query_params_defaults_to_configured_sortby():
+    """No params -> only the configured default sort key."""
+    assert PyCSWQueryParams() == {"sortby": "-datetime"}
+
+
+def test_query_params_empty_sortby_is_empty_dict():
+    """An empty sortby lets pycsw pick the order."""
+    assert PyCSWQueryParams(sortby="") == {}
+
+
+@respx.mock
+def test_app_tilejson_and_health(monkeypatch):
+    """End-to-end: app boots, tilejson renders, health checks pycsw."""
+    monkeypatch.setenv("TITILER_PYCSW_STAC_API_URL", STAC_URL)
+    # health check pings the STAC landing page
+    respx.get(STAC_URL).mock(return_value=httpx.Response(200, json={}))
+
+    # import after env is set so settings pick it up
+    import importlib
+
+    import titiler.pycsw.main as main_mod
+
+    importlib.reload(main_mod)
+    from starlette.testclient import TestClient
+
+    with TestClient(main_mod.app) as client:
+        r = client.get(
+            "/mosaic/WebMercatorQuad/tilejson.json",
+            params={"collections": "demo", "assets": "cog"},
+        )
+        assert r.status_code == 200, r.text
+        tj = r.json()
+        assert tj["minzoom"] == 0 and tj["maxzoom"] == 24
+        assert "/mosaic/tiles/WebMercatorQuad/{z}/{x}/{y}" in tj["tiles"][0]
+        assert "collections=demo" in tj["tiles"][0]
+
+        h = client.get("/healthz")
+        assert h.status_code == 200
+        assert h.json()["pycsw_online"] is True
+
+
+@respx.mock
+def test_app_bbox_and_feature_routes(monkeypatch):
+    """/bbox and /feature reach the backend, which returns 204 on no assets."""
+    monkeypatch.setenv("TITILER_PYCSW_STAC_API_URL", STAC_URL)
+    respx.get(f"{STAC_URL}/search").mock(
+        return_value=httpx.Response(
+            200, json={"type": "FeatureCollection", "features": []}
+        )
+    )
+
+    import importlib
+
+    import titiler.pycsw.main as main_mod
+
+    importlib.reload(main_mod)
+    from starlette.testclient import TestClient
+
+    with TestClient(main_mod.app) as client:
+        r = client.get("/mosaic/bbox/0,0,1,1.png", params={"assets": "cog"})
+        assert r.status_code == 204, r.text
+
+        r = client.post(
+            "/mosaic/feature.png",
+            params={"assets": "cog"},
+            json={
+                "type": "Feature",
+                "properties": {},
+                "geometry": ITEM["geometry"],
+            },
+        )
+        assert r.status_code == 204, r.text

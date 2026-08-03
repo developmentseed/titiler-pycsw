@@ -1,0 +1,32 @@
+{
+  "type": "Feature",
+  "stac_version": "1.0.0",
+  "stac_extensions": [],
+  "id": "demo-scene-1",
+  "collection": "demo",
+  "bbox": [-122.6, 37.6, -122.3, 37.9],
+  "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+      [
+        [-122.6, 37.6],
+        [-122.3, 37.6],
+        [-122.3, 37.9],
+        [-122.6, 37.9],
+        [-122.6, 37.6]
+      ]
+    ]
+  },
+  "properties": {
+    "datetime": "2021-06-15T18:00:00Z"
+  },
+  "assets": {
+    "cog": {
+      "href": "https://REPLACE-ME.example.com/path/to/scene.tif",
+      "type": "image/tiff; application=geotiff; profile=cloud-optimized",
+      "roles": ["data"],
+      "title": "Cloud-optimized GeoTIFF"
+    }
+  },
+  "links": []
+}
