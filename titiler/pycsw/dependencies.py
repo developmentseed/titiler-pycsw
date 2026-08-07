@@ -32,12 +32,14 @@ def PyCSWQueryParams(
             ),
         ),
     ] = None,
+    # TODO: revisit once pycsw applies CQL2-JSON filters instead of ignoring them.
     filter: Annotated[
         Optional[str],
         Query(
             description=(
                 "CQL2-JSON filter (as a JSON-encoded string). When provided, the "
-                "search is issued via `POST /stac/search`."
+                "search is issued via `POST /stac/search`. NOTE: pycsw 3.0-dev does "
+                "not apply the filter, so results come back unfiltered."
             ),
         ),
     ] = None,

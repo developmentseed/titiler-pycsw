@@ -5,9 +5,10 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
-# system deps for rasterio/GDAL wheels are bundled; nothing extra needed for
-# the manylinux wheels, but curl is handy for healthchecks
-RUN apt-get update && apt-get install -y --no-install-recommends curl \
+# rasterio/GDAL ship their own libs in the manylinux wheels, but those wheels
+# still link against libexpat, which python:*-slim does not include. curl is
+# handy for healthchecks.
+RUN apt-get update && apt-get install -y --no-install-recommends curl libexpat1 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY pyproject.toml README.md ./

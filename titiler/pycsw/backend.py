@@ -22,7 +22,7 @@ from rio_tiler.constants import WEB_MERCATOR_TMS, WGS84_CRS
 from rio_tiler.errors import PointOutsideBounds
 from rio_tiler.models import ImageData
 from rio_tiler.mosaic import mosaic_reader
-from rio_tiler.tasks import multi_values
+from rio_tiler.tasks import MAX_THREADS, create_tasks, filter_tasks
 from rio_tiler.types import BBox
 
 from titiler.pycsw.client import PyCSWSTACClient, PyCSWSTACServerError
@@ -214,8 +214,15 @@ class PyCSWBackend(BaseBackend):
             with self.reader(item, **self.reader_options) as src_dst:
                 return src_dst.point(lon, lat, **kwargs)
 
-        kwargs.setdefault("allowed_exceptions", (PointOutsideBounds,))
-        return list(multi_values(mosaic_assets, _reader, lon, lat, **kwargs).items())
+        # STAC items are unhashable, so pair results into a list rather than a dict.
+        allowed_exceptions = kwargs.pop("allowed_exceptions", (PointOutsideBounds,))
+        threads = kwargs.pop("threads", MAX_THREADS)
+
+        tasks = create_tasks(_reader, mosaic_assets, threads, lon, lat, **kwargs)
+        return [
+            (item, pts)
+            for pts, item in filter_tasks(tasks, allowed_exceptions=allowed_exceptions)
+        ]
 
     def part(
         self,

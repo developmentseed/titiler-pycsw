@@ -17,6 +17,12 @@ class PyCSWSTACServerError(PyCSWSTACError):
     """pycsw STAC API returned a 5xx response (retryable)."""
 
 
+PYCSW_STATUS_CODES = {
+    PyCSWSTACError: 400,
+    PyCSWSTACServerError: 502,
+}
+
+
 class PyCSWSTACClient:
     """Synchronous STAC item-search client for pycsw."""
 
@@ -135,6 +141,7 @@ class PyCSWSTACClient:
         if ids:
             params["ids"] = ",".join(ids)
         if sortby:
-            params["sortby"] = sortby
+            field = sortby.lstrip("+-")
+            params["sortby"] = f"-{field}" if sortby.startswith("-") else field
 
         return params

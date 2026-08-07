@@ -13,7 +13,7 @@ from titiler.core.factory import AlgorithmFactory, TMSFactory
 from titiler.core.middleware import CacheControlMiddleware
 from titiler.mosaic.errors import MOSAIC_STATUS_CODES
 from titiler.pycsw import __version__ as titiler_pycsw_version
-from titiler.pycsw.client import PyCSWSTACClient
+from titiler.pycsw.client import PYCSW_STATUS_CODES, PyCSWSTACClient
 from titiler.pycsw.factory import MosaicTilerFactory
 from titiler.pycsw.settings import ApiSettings, PyCSWSettings
 
@@ -51,6 +51,7 @@ app = FastAPI(
 
 add_exception_handlers(app, DEFAULT_STATUS_CODES)
 add_exception_handlers(app, MOSAIC_STATUS_CODES)
+add_exception_handlers(app, PYCSW_STATUS_CODES)
 
 if settings.cors_origins:
     app.add_middleware(

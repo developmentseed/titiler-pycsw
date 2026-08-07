@@ -94,6 +94,44 @@ def test_backend_get_assets_returns_items():
     assert assets[0]["assets"]["cog"]["href"] == "s3://bucket/scene-1.tif"
 
 
+@respx.mock
+def test_client_get_search_normalises_ascending_sortby():
+    """A leading `+` is stripped; pycsw 500s on `+datetime`."""
+    route = respx.get(f"{STAC_URL}/search").mock(
+        return_value=httpx.Response(200, json=FEATURE_COLLECTION)
+    )
+
+    client = PyCSWSTACClient(STAC_URL, client=httpx.Client())
+    client.search(bbox=(0, 0, 10, 10), sortby="+datetime")
+    assert route.calls.last.request.url.params["sortby"] == "datetime"
+
+    client.search(bbox=(0, 0, 10, 10), sortby="-datetime")
+    assert route.calls.last.request.url.params["sortby"] == "-datetime"
+
+
+@respx.mock
+def test_backend_point_returns_item_value_pairs():
+    """Point results pair unhashable STAC item dicts with their values."""
+    from unittest.mock import patch
+
+    from titiler.pycsw.backend import PyCSWBackend
+
+    respx.get(f"{STAC_URL}/search").mock(
+        return_value=httpx.Response(200, json=FEATURE_COLLECTION)
+    )
+
+    client = PyCSWSTACClient(STAC_URL, client=httpx.Client())
+    with PyCSWBackend(client=client) as backend:
+        with patch.object(backend, "reader") as mock_reader:
+            mock_reader.return_value.__enter__.return_value.point.return_value = "pt"
+            values = backend.point(5.5551, 6.6661, threads=0)
+
+    assert len(values) == 1
+    item, pts = values[0]
+    assert item["id"] == "scene-1"
+    assert pts == "pt"
+
+
 def test_query_params_dependency_parses_inputs():
     """PyCSWQueryParams parses CSV lists and CQL2-JSON filter strings."""
     query = PyCSWQueryParams(
@@ -184,3 +222,30 @@ def test_app_bbox_and_feature_routes(monkeypatch):
             },
         )
         assert r.status_code == 204, r.text
+
+
+@respx.mock
+def test_app_maps_pycsw_errors_to_status_codes(monkeypatch):
+    """pycsw 4xx surfaces as 400 and 5xx as 502, not a bare 500."""
+    monkeypatch.setenv("TITILER_PYCSW_STAC_API_URL", STAC_URL)
+
+    import importlib
+
+    import titiler.pycsw.main as main_mod
+
+    importlib.reload(main_mod)
+    from starlette.testclient import TestClient
+
+    # bboxes are unique per assertion to sidestep the module-level TTLCache
+    with TestClient(main_mod.app, raise_server_exceptions=False) as client:
+        respx.get(f"{STAC_URL}/search").mock(
+            return_value=httpx.Response(400, text="bad filter")
+        )
+        r = client.get("/mosaic/bbox/11,11,12,12.png", params={"assets": "cog"})
+        assert r.status_code == 400, r.text
+
+        respx.get(f"{STAC_URL}/search").mock(
+            return_value=httpx.Response(500, text="boom")
+        )
+        r = client.get("/mosaic/bbox/13,13,14,14.png", params={"assets": "cog"})
+        assert r.status_code == 502, r.text

@@ -6,15 +6,27 @@
 # item to POST into the transactional endpoints.
 
 services:
+  # Docker creates a volume mountpoint root-owned when the path is absent from
+  # the image, so hand /data to the unprivileged pycsw user before pycsw starts.
+  pycsw-init:
+    image: geopython/pycsw:latest
+    user: root
+    entrypoint: ["chown", "pycsw:pycsw", "/data"]
+    volumes:
+      - pycsw-data:/data
+
   pycsw:
     image: geopython/pycsw:latest
     ports:
       - "8000:8000"
     volumes:
       - ./stack/pycsw.yml:/etc/pycsw/pycsw.yml:ro
-      - ./stack/data:/data
+      - pycsw-data:/data
     environment:
       PYCSW_CONFIG: /etc/pycsw/pycsw.yml
+    depends_on:
+      pycsw-init:
+        condition: service_completed_successfully
 
   titiler-pycsw:
     build:
@@ -33,3 +45,6 @@ services:
       VSI_CACHE: "TRUE"
     depends_on:
       - pycsw
+
+volumes:
+  pycsw-data:
