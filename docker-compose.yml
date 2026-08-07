@@ -1,13 +1,4 @@
-# Local POC stack: pycsw (STAC API) + titiler-pycsw.
-#
-# pycsw serves a STAC API at http://localhost:8000/stac and starts with an empty
-# repository. For tiling to return pixels you must load STAC records whose assets
-# point at rasterio-readable sources (COGs); stack/ holds a sample collection and
-# item to POST into the transactional endpoints.
-
 services:
-  # Docker creates a volume mountpoint root-owned when the path is absent from
-  # the image, so hand /data to the unprivileged pycsw user before pycsw starts.
   pycsw-init:
     image: geopython/pycsw:latest
     user: root

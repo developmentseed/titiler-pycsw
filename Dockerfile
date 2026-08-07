@@ -5,9 +5,7 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
-# rasterio/GDAL ship their own libs in the manylinux wheels, but those wheels
-# still link against libexpat, which python:*-slim does not include. curl is
-# handy for healthchecks.
+# libexpat1: rasterio's manylinux wheels link against it, python:*-slim omits it
 RUN apt-get update && apt-get install -y --no-install-recommends curl libexpat1 \
     && rm -rf /var/lib/apt/lists/*
 

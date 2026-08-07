@@ -32,7 +32,6 @@ def PyCSWQueryParams(
             ),
         ),
     ] = None,
-    # TODO: revisit once pycsw applies CQL2-JSON filters instead of ignoring them.
     filter: Annotated[
         Optional[str],
         Query(
