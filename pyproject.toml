@@ -1,9 +1,9 @@
 [project]
-name = "titiler.pycsw"
+name = "titiler-pycsw"
 description = "Connect a pycsw STAC API to TiTiler for dynamic tiling."
 readme = "README.md"
 requires-python = ">=3.10"
-license = {text = "MIT"}
+license = {file = "LICENSE"}
 authors = [
     {name = "Development Seed"},
 ]
@@ -47,14 +47,14 @@ uvicorn = [
 lambda = [
     "mangum>=0.19",
 ]
-test = [
+
+[dependency-groups]
+dev = [
+    "pre-commit",
     "pytest",
     "pytest-cov",
     "respx",
     "httpx",
-]
-dev = [
-    "pre-commit",
     "ruff",
 ]
 
