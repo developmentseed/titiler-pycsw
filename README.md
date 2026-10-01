@@ -116,8 +116,11 @@ requests.
 
 ## Development
 
+Dependencies are locked in `uv.lock`; the `dev` group carries the test and lint
+tooling.
+
 ```bash
-pip install -e ".[test,dev,uvicorn]"
-pytest
-ruff check . && ruff format --check .
+uv sync
+uv run pytest
+uv run ruff check . && uv run ruff format --check .
 ```

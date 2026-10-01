@@ -1,13 +1,19 @@
 name: CI
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - '**'
     tags:
       - '*'
+    paths:
+      - 'pyproject.toml'
+      - 'titiler/**'
+      - 'tests/**'
+      - 'uv.lock'
+      - '.github/workflows/ci.yml'
   pull_request:
-  workflow_dispatch:
 
 permissions:
   contents: read
@@ -28,22 +34,21 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - name: Install uv
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
+          version: "0.9.*"
+          enable-cache: true
           python-version: ${{ matrix.python-version }}
-          cache: pip
-          cache-dependency-path: pyproject.toml
 
       - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -e ".[test,dev]"
+        run: uv sync --frozen
 
       - name: Lint
         if: ${{ matrix.python-version == env.LATEST_PY_VERSION }}
         run: |
-          ruff check .
-          ruff format --check .
+          uv run ruff check .
+          uv run ruff format --check .
 
-      - name: Test
-        run: pytest
+      - name: Run tests
+        run: uv run pytest --cov titiler.pycsw --cov-report term-missing
