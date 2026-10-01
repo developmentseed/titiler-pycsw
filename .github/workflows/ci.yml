@@ -12,6 +12,7 @@ on:
       - 'titiler/**'
       - 'tests/**'
       - 'uv.lock'
+      - 'Dockerfile'
       - '.github/workflows/ci.yml'
   pull_request:
 
@@ -52,3 +53,33 @@ jobs:
 
       - name: Run tests
         run: uv run pytest --cov titiler.pycsw --cov-report term-missing
+
+  docker:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build the image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: Dockerfile
+          push: false
+          load: true
+          tags: titiler-pycsw:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Check it serves
+        run: |
+          docker run -d --name ci -p 8081:8081 titiler-pycsw:ci
+          for _ in $(seq 1 30); do
+            curl -sf http://127.0.0.1:8081/healthz >/dev/null && break
+            sleep 1
+          done
+          curl -sf http://127.0.0.1:8081/healthz
+          docker rm -f ci
