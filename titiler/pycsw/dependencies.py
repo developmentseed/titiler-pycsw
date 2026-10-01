@@ -36,14 +36,10 @@ def PyCSWQueryParams(
         Optional[str],
         Query(
             description=(
-                "CQL2-JSON filter (as a JSON-encoded string). When provided, the "
-                "search is issued via `POST /stac/search`, and composes with "
-                "`collections`, `datetime`, `ids` and the tile's bbox. "
-                "NOTE: pycsw filters on **catalogue field names, not STAC property "
-                "names** — use `collections` (not `collection`), `cloudcover` (not "
-                "`eo:cloud_cover`), `identifier` (not `id`). `GET /queryables` on "
-                "the catalogue lists them, though it under-reports; an unknown name "
-                "is rejected with the full list of what is available."
+                "CQL2-JSON filter, JSON-encoded. Composes with `collections`, "
+                "`datetime`, `ids` and the bbox. Properties are pycsw field names, "
+                "not STAC ones — `cloudcover`, not `eo:cloud_cover`; an unknown "
+                "name is rejected with the list that works."
             ),
         ),
     ] = None,
@@ -58,9 +54,8 @@ def PyCSWQueryParams(
         Optional[str],
         Query(
             description=(
-                "Sort key, e.g. `-datetime` for newest first. Sets the order items "
-                "are mosaicked in, so it decides which item wins for overlapping "
-                "pixels. Pass an empty value to let pycsw choose the order."
+                "Sort key, e.g. `-datetime` for newest first. Decides which item "
+                "wins for overlapping pixels. Empty lets pycsw choose."
             ),
         ),
     ] = pycsw_settings.default_sortby,
@@ -110,11 +105,9 @@ class PyCSWSearchOptions(DefaultDependency):
             ge=1,
             le=10_000,
             description=(
-                "Max number of items to mosaic for this request. The client-side "
-                "analogue of pgstac's `items_limit`; there is no server-side "
-                "skip-covered/exit-when-full optimisation. pycsw caps records per "
-                "response, so reaching this may take several `rel=next` hops, "
-                "bounded by `TITILER_PYCSW_MAX_PAGES`."
+                "Max number of items to mosaic for this request. pycsw caps "
+                "records per response, so reaching it may take several `rel=next` "
+                "hops, bounded by `TITILER_PYCSW_MAX_PAGES`."
             ),
         ),
     ] = pycsw_settings.default_limit
@@ -123,12 +116,9 @@ class PyCSWSearchOptions(DefaultDependency):
         Optional[str],
         Query(
             description=(
-                "CRS to run a second item-search in, e.g. `EPSG:2100`. Some "
-                "catalogues publish `bbox`/`geometry` in the data's projected CRS "
-                "instead of the WGS84 STAC requires; pycsw indexes those numbers "
-                "as-is, so no lon/lat bbox can reach them and it offers no "
-                "`bbox-crs` to ask with. Costs one extra search per request. "
-                "Defaults to `TITILER_PYCSW_ALT_SEARCH_CRS`."
+                "CRS to run a second item-search in, e.g. `EPSG:2100`, reaching "
+                "items whose bbox is not lon/lat. Costs one extra search per "
+                "request. Defaults to `TITILER_PYCSW_ALT_SEARCH_CRS`."
             ),
         ),
     ] = pycsw_settings.alt_search_crs
@@ -137,8 +127,8 @@ class PyCSWSearchOptions(DefaultDependency):
         bool,
         Query(
             description=(
-                "Mosaic the search results in reverse order, so the last item "
-                "wins for overlapping pixels instead of the first."
+                "Mosaic in reverse order, so the last item wins for overlapping "
+                "pixels instead of the first."
             ),
         ),
     ] = False
