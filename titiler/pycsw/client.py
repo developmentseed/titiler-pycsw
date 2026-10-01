@@ -8,14 +8,21 @@ from cachetools import TTLCache, cached
 from cachetools.keys import hashkey
 from rio_tiler.types import BBox
 
-from titiler.pycsw.settings import CacheSettings
+from titiler.pycsw.settings import CacheSettings, PyCSWSettings
 
 logger = logging.getLogger(__name__)
 
 cache_config = CacheSettings()
+pycsw_config = PyCSWSettings()
 
 # how much of an error response body to keep in the raised exception
 ERROR_BODY_CHARS = 500
+
+# decimal places a bbox is pinned to on the wire and in cache keys, ~1mm
+BBOX_PRECISION = 8
+
+# the only filter language pycsw accepts
+DEFAULT_FILTER_LANG = "cql2-json"
 
 # pycsw's query_mappings, which `GET /queryables` under-reports
 PYCSW_CORE_QUERYABLES = frozenset(
@@ -118,8 +125,8 @@ class PyCSWSTACClient:
         self,
         url: str,
         client: Optional[httpx.Client] = None,
-        timeout: float = 30.0,
-        max_pages: int = 10,
+        timeout: float = pycsw_config.request_timeout,
+        max_pages: int = pycsw_config.max_pages,
     ) -> None:
         """Initialize the client.
 
@@ -198,9 +205,9 @@ class PyCSWSTACClient:
         collections: Optional[List[str]] = None,
         ids: Optional[List[str]] = None,
         filter: Optional[Dict[str, Any]] = None,
-        filter_lang: str = "cql2-json",
+        filter_lang: str = DEFAULT_FILTER_LANG,
         sortby: Optional[str] = None,
-        limit: int = 100,
+        limit: int = pycsw_config.default_limit,
     ) -> List[Dict[str, Any]]:
         """Run a STAC item search, following `rel=next` until `limit` is met."""
         if filter is not None:
@@ -321,7 +328,7 @@ class PyCSWSTACClient:
             "filter-lang": filter_lang,
         }
         if bbox is not None:
-            body["bbox"] = [round(c, 8) for c in bbox]
+            body["bbox"] = [round(c, BBOX_PRECISION) for c in bbox]
         if datetime:
             body["datetime"] = datetime
         if collections:
@@ -350,7 +357,7 @@ class PyCSWSTACClient:
         """Build the query string for `GET /search`."""
         params: Dict[str, Any] = {"limit": limit}
         if bbox is not None:
-            params["bbox"] = ",".join(str(round(c, 8)) for c in bbox)
+            params["bbox"] = ",".join(str(round(c, BBOX_PRECISION)) for c in bbox)
         if datetime:
             params["datetime"] = datetime
         if collections:

@@ -32,7 +32,11 @@ from rio_tiler.mosaic import mosaic_reader
 from rio_tiler.tasks import MAX_THREADS, create_tasks, filter_tasks
 from rio_tiler.types import BBox
 
-from titiler.pycsw.client import PyCSWSTACClient, PyCSWSTACServerError
+from titiler.pycsw.client import (
+    BBOX_PRECISION,
+    PyCSWSTACClient,
+    PyCSWSTACServerError,
+)
 from titiler.pycsw.reader import PyCSWSTACReader
 from titiler.pycsw.settings import CacheSettings, PyCSWSettings, RetrySettings
 from titiler.pycsw.utils import retry
@@ -144,10 +148,10 @@ class PyCSWBackend(BaseBackend):
         TTLCache(maxsize=cache_config.maxsize, ttl=cache_config.ttl),
         key=lambda self, xmin, ymin, xmax, ymax, query=None, limit=None: hashkey(
             self.client.url,
-            round(xmin, 8),
-            round(ymin, 8),
-            round(xmax, 8),
-            round(ymax, 8),
+            round(xmin, BBOX_PRECISION),
+            round(ymin, BBOX_PRECISION),
+            round(xmax, BBOX_PRECISION),
+            round(ymax, BBOX_PRECISION),
             repr(query),
             limit,
             self.alt_search_crs,

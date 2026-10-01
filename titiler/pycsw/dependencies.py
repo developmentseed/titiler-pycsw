@@ -8,7 +8,7 @@ from fastapi import HTTPException, Query
 from starlette.requests import Request
 
 from titiler.core.dependencies import DefaultDependency
-from titiler.pycsw.client import PyCSWSTACClient
+from titiler.pycsw.client import DEFAULT_FILTER_LANG, PyCSWSTACClient
 from titiler.pycsw.settings import PyCSWSettings
 
 pycsw_settings = PyCSWSettings()
@@ -53,7 +53,7 @@ def PyCSWQueryParams(
             alias="filter-lang",
             description="Filter language for `filter` (currently `cql2-json`).",
         ),
-    ] = "cql2-json",
+    ] = DEFAULT_FILTER_LANG,
     sortby: Annotated[
         Optional[str],
         Query(
