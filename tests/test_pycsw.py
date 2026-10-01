@@ -614,3 +614,131 @@ PROJECTED_ITEM = {
     "properties": {"proj:code": "EPSG:2100"},
     "assets": {"sme": {"href": "https://host/sme.tif"}},
 }
+
+
+def test_bbox_is_wgs84_distinguishes_lonlat_from_metres():
+    from titiler.pycsw.reader import bbox_is_wgs84
+
+    assert bbox_is_wgs84([23.6, 37.8, 23.9, 38.2]) is True
+    assert bbox_is_wgs84([-180, -90, 180, 90]) is True
+    assert bbox_is_wgs84([368221.6, 4184874.9, 385110.7, 4195264.4]) is False
+    assert bbox_is_wgs84(None) is False
+    assert bbox_is_wgs84([1, 2]) is False
+
+
+def test_item_crs_lets_the_bbox_numbers_win_over_proj_code():
+    """`proj:code` is the ASSET's CRS; a lon/lat bbox stays WGS84 regardless.
+
+    Reading it the other way round put well-formed items at projected
+    coordinates and made every tile miss them.
+    """
+    from rio_tiler.constants import WGS84_CRS
+
+    from titiler.pycsw.reader import item_crs
+
+    wgs84_item = {
+        "bbox": [24.4, 41.4, 24.7, 42.4],
+        "properties": {"proj:code": "EPSG:32634"},
+    }
+    assert item_crs(wgs84_item) == WGS84_CRS
+    assert item_crs(wgs84_item, fallback="EPSG:2100") == WGS84_CRS
+
+
+def test_item_crs_reads_the_projection_extension_when_bbox_is_not_lonlat():
+    from rasterio.crs import CRS
+    from rio_tiler.constants import WGS84_CRS
+
+    from titiler.pycsw.reader import item_crs
+
+    greek = CRS.from_epsg(2100)
+    assert item_crs(PROJECTED_ITEM) == greek
+    # the spellings actually seen in the wild
+    assert item_crs({**PROJECTED_ITEM, "properties": {"proj:code": "2100"}}) == greek
+    assert item_crs({**PROJECTED_ITEM, "properties": {"proj:epsg": "2100"}}) == greek
+    assert item_crs({**PROJECTED_ITEM, "properties": {"proj:epsg": 2100}}) == greek
+    # nothing to go on: only the configured fallback can name it
+    bare = {**PROJECTED_ITEM, "properties": {}}
+    assert item_crs(bare) == WGS84_CRS
+    assert item_crs(bare, fallback="EPSG:2100") == greek
+    # a nonsense code must not take the reader down
+    assert (
+        item_crs({**PROJECTED_ITEM, "properties": {"proj:code": "nope"}}) == WGS84_CRS
+    )
+
+
+def test_reader_bounds_and_crs_agree_for_projected_items():
+    """Bounds in metres with a WGS84 crs puts the dataset off the planet."""
+    from rasterio.crs import CRS
+
+    from titiler.pycsw.reader import PyCSWSTACReader
+
+    with PyCSWSTACReader(PROJECTED_ITEM) as r:
+        assert r.crs == CRS.from_epsg(2100)
+        assert r.bounds == PROJECTED_ITEM["bbox"]
+        # the sanity check that matters: it lands in Greece, not off-world
+        assert 22 < r.get_geographic_bounds(CRS.from_epsg(4326))[0] < 23
+
+
+@respx.mock
+def test_backend_alt_crs_runs_a_second_search_and_merges():
+    """Projected items need a search in their own numeric space to be found."""
+    from titiler.pycsw.backend import PyCSWBackend
+
+    wgs = {**ITEM, "id": "wgs-1"}
+    route = respx.get(f"{STAC_URL}/search").mock(
+        side_effect=[
+            httpx.Response(200, json={"type": "FeatureCollection", "features": [wgs]}),
+            httpx.Response(
+                200,
+                json={"type": "FeatureCollection", "features": [PROJECTED_ITEM]},
+            ),
+        ]
+    )
+
+    client = PyCSWSTACClient(STAC_URL, client=httpx.Client())
+    with PyCSWBackend(client=client, alt_search_crs="EPSG:2100") as backend:
+        found = backend.get_assets(23.70, 37.90, 23.75, 37.95, limit=10)
+
+    assert [i["id"] for i in found] == ["wgs-1", "proj-1"]
+    assert route.call_count == 2
+    # the second search must ask in metres, not degrees
+    second = route.calls[1].request.url.params["bbox"]
+    assert all(abs(float(v)) > 1000 for v in second.split(","))
+
+
+@respx.mock
+def test_backend_without_alt_crs_searches_once():
+    """The extra round trip is opt-in."""
+    from titiler.pycsw.backend import PyCSWBackend
+
+    route = respx.get(f"{STAC_URL}/search").mock(
+        return_value=httpx.Response(200, json=FEATURE_COLLECTION)
+    )
+
+    client = PyCSWSTACClient(STAC_URL, client=httpx.Client())
+    with PyCSWBackend(client=client) as backend:
+        backend.get_assets(7.70, 7.90, 7.75, 7.95, limit=10)
+
+    assert route.call_count == 1
+
+
+@respx.mock
+def test_backend_alt_crs_skips_bboxes_outside_the_crs_area():
+    """`transform_bounds` extrapolates rather than failing outside the CRS.
+
+    Without an area-of-use check every tile panned away from the region would
+    spend a second round trip to be told nothing matched.
+    """
+    from titiler.pycsw.backend import PyCSWBackend
+
+    route = respx.get(f"{STAC_URL}/search").mock(
+        return_value=httpx.Response(
+            200, json={"type": "FeatureCollection", "features": []}
+        )
+    )
+
+    client = PyCSWSTACClient(STAC_URL, client=httpx.Client())
+    with PyCSWBackend(client=client, alt_search_crs="EPSG:2100") as backend:
+        backend.get_assets(-179.9, -89.9, -179.0, -89.0, limit=10)
+
+    assert route.call_count == 1

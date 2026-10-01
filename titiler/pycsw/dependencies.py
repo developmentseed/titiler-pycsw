@@ -119,6 +119,20 @@ class PyCSWSearchOptions(DefaultDependency):
         ),
     ] = pycsw_settings.default_limit
 
+    alt_crs: Annotated[
+        Optional[str],
+        Query(
+            description=(
+                "CRS to run a second item-search in, e.g. `EPSG:2100`. Some "
+                "catalogues publish `bbox`/`geometry` in the data's projected CRS "
+                "instead of the WGS84 STAC requires; pycsw indexes those numbers "
+                "as-is, so no lon/lat bbox can reach them and it offers no "
+                "`bbox-crs` to ask with. Costs one extra search per request. "
+                "Defaults to `TITILER_PYCSW_ALT_SEARCH_CRS`."
+            ),
+        ),
+    ] = pycsw_settings.alt_search_crs
+
     reverse: Annotated[
         bool,
         Query(

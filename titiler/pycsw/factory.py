@@ -141,6 +141,7 @@ class MosaicTilerFactory(TilerFactory):
                     client=backend_params.client,
                     tms=tms,
                     reader_options={**reader_params.as_dict()},
+                    alt_search_crs=search_options.alt_crs,
                 ) as src_dst:
                     if MOSAIC_STRICT_ZOOM and (
                         z < src_dst.minzoom or z > src_dst.maxzoom
@@ -243,7 +244,11 @@ class MosaicTilerFactory(TilerFactory):
                 tiles_url += f"?{urlencode(qs)}"
 
             tms = self.supported_tms.get(tileMatrixSetId)
-            with PyCSWBackend(client=backend_params.client, tms=tms) as src_dst:
+            with PyCSWBackend(
+                client=backend_params.client,
+                tms=tms,
+                alt_search_crs=search_options.alt_crs,
+            ) as src_dst:
                 return {
                     "bounds": src_dst.get_geographic_bounds(
                         tms.rasterio_geographic_crs
@@ -276,6 +281,7 @@ class MosaicTilerFactory(TilerFactory):
                 with PyCSWBackend(
                     client=backend_params.client,
                     reader_options={**reader_params.as_dict()},
+                    alt_search_crs=search_options.alt_crs,
                 ) as src_dst:
                     values = src_dst.point(
                         lon,
@@ -344,6 +350,7 @@ class MosaicTilerFactory(TilerFactory):
                 with PyCSWBackend(
                     client=backend_params.client,
                     reader_options={**reader_params.as_dict()},
+                    alt_search_crs=search_options.alt_crs,
                 ) as src_dst:
                     image, assets = src_dst.part(
                         [minx, miny, maxx, maxy],
@@ -421,6 +428,7 @@ class MosaicTilerFactory(TilerFactory):
                 with PyCSWBackend(
                     client=backend_params.client,
                     reader_options={**reader_params.as_dict()},
+                    alt_search_crs=search_options.alt_crs,
                 ) as src_dst:
                     image, assets = src_dst.feature(
                         geojson.model_dump(exclude_none=True),

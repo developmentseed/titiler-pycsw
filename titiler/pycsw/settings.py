@@ -45,6 +45,9 @@ class PyCSWSettings(BaseSettings):
     # base for assets published as server paths; empty uses the catalogue origin
     asset_base_url: Optional[str] = None
 
+    # CRS to run a second item-search in, for items whose bbox is not lon/lat
+    alt_search_crs: Optional[str] = None
+
     model_config = SettingsConfigDict(
         env_prefix="TITILER_PYCSW_",
         env_file=".env",

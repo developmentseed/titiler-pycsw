@@ -3,12 +3,13 @@
 Adapted from titiler.pgstac's `CustomSTACReader` (MIT License).
 """
 
-from typing import Any, Dict, Optional, Type
+from typing import Any, Dict, List, Optional, Type
 from urllib.parse import urlsplit
 
 import attr
 import rasterio
 from morecantile import TileMatrixSet
+from rasterio.crs import CRS
 from rio_tiler.constants import WEB_MERCATOR_TMS, WGS84_CRS
 from rio_tiler.errors import InvalidAssetName
 from rio_tiler.io import Reader
@@ -46,6 +47,47 @@ def resolve_href(href: str, base_url: str) -> str:
     return href
 
 
+def bbox_is_wgs84(bbox: Optional[List[float]]) -> bool:
+    """Whether a bbox's numbers fall inside the lon/lat ranges."""
+    if not bbox or len(bbox) < 4:
+        return False
+
+    xmin, ymin, xmax, ymax = bbox[0], bbox[1], bbox[2], bbox[3]
+
+    return (
+        -180 <= xmin <= 180
+        and -180 <= xmax <= 180
+        and -90 <= ymin <= 90
+        and -90 <= ymax <= 90
+    )
+
+
+def item_crs(item: Dict[str, Any], fallback: Optional[str] = None) -> CRS:
+    """CRS the item's `bbox` is expressed in; the numbers decide, not `proj:code`."""
+    bbox = item.get("bbox")
+    if bbox_is_wgs84(bbox):
+        return WGS84_CRS
+
+    props = item.get("properties") or {}
+    for key in ("proj:code", "proj:epsg"):
+        value = props.get(key)
+        if value in (None, ""):
+            continue
+        try:
+            text = str(value)
+            return CRS.from_user_input(f"EPSG:{text}" if text.isdigit() else text)
+        except Exception:  # a malformed code is not fatal
+            continue
+
+    if fallback:
+        try:
+            return CRS.from_user_input(fallback)
+        except Exception:
+            return WGS84_CRS
+
+    return WGS84_CRS
+
+
 @attr.s
 class PyCSWSTACReader(MultiBaseReader):
     """STAC Reader backed by a pycsw STAC Item dict.
@@ -65,12 +107,15 @@ class PyCSWSTACReader(MultiBaseReader):
 
     asset_base_url: Optional[str] = attr.ib(factory=default_asset_base_url)
 
+    # assumed when a bbox is not lon/lat and the item carries no projection code
+    fallback_crs: Optional[str] = attr.ib(default=None)
+
     ctx: Any = attr.ib(default=rasterio.Env)
 
     def __attrs_post_init__(self) -> None:
         """Set reader spatial infos and list of valid assets."""
         self.bounds = self.input["bbox"]
-        self.crs = WGS84_CRS
+        self.crs = item_crs(self.input, self.fallback_crs)
         self.assets = list(self.input["assets"])
 
     @minzoom.default

@@ -5,10 +5,12 @@ every request issues an item-search with the request geometry's bbox, then
 mosaics the returned assets. There is no persisted MosaicJSON.
 """
 
+import math
 from typing import Any, Dict, List, Optional, Tuple, Type
 
 import attr
 import httpx
+import pyproj
 from cachetools import TTLCache, cached
 from cachetools.keys import hashkey
 from cogeo_mosaic.backends import BaseBackend
@@ -50,6 +52,9 @@ class PyCSWBackend(BaseBackend):
 
     reader: Type[PyCSWSTACReader] = attr.ib(init=False, default=PyCSWSTACReader)
     reader_options: Dict = attr.ib(factory=dict)
+
+    # CRS this catalogue's items may publish their coordinates in, not WGS84
+    alt_search_crs: Optional[str] = attr.ib(default=pycsw_config.alt_search_crs)
 
     bounds: BBox = attr.ib(default=(-180, -90, 180, 90))
     crs: CRS = attr.ib(default=WGS84_CRS)
@@ -137,6 +142,7 @@ class PyCSWBackend(BaseBackend):
             round(ymax, 8),
             repr(query),
             limit,
+            self.alt_search_crs,
         ),
     )
     @retry(
@@ -159,12 +165,64 @@ class PyCSWBackend(BaseBackend):
         `PyCSWQueryParams` dependency. Items without a bbox or assets cannot be
         read and are dropped.
         """
+        limit = limit or pycsw_config.default_limit
         items = self.client.search(
-            bbox=(xmin, ymin, xmax, ymax),
-            limit=limit or pycsw_config.default_limit,
-            **(query or {}),
+            bbox=(xmin, ymin, xmax, ymax), limit=limit, **(query or {})
         )
-        return [item for item in items if item.get("bbox") and item.get("assets")]
+
+        if self.alt_search_crs:
+            items += self._search_alt_crs(xmin, ymin, xmax, ymax, query, limit)
+
+        seen = set()
+        keep = []
+        for item in items:
+            if not (item.get("bbox") and item.get("assets")):
+                continue
+            item_id = item.get("id")
+            if item_id is not None:
+                if item_id in seen:
+                    continue
+                seen.add(item_id)
+            keep.append(item)
+
+        return keep
+
+    def _search_alt_crs(
+        self,
+        xmin: float,
+        ymin: float,
+        xmax: float,
+        ymax: float,
+        query: Optional[Dict[str, Any]],
+        limit: int,
+    ) -> List[Dict[str, Any]]:
+        """Second search with the bounds transformed into `alt_search_crs`."""
+        try:
+            alt = pyproj.CRS.from_user_input(self.alt_search_crs)
+        except Exception:
+            return []
+
+        # outside its area of use `transform_bounds` extrapolates rather than fails
+        area = alt.area_of_use
+        if area and (
+            xmax < area.west
+            or xmin > area.east
+            or ymax < area.south
+            or ymin > area.north
+        ):
+            return []
+
+        try:
+            bounds = transform_bounds(
+                WGS84_CRS, CRS.from_user_input(alt.to_wkt()), xmin, ymin, xmax, ymax
+            )
+        except Exception:
+            return []
+
+        if not all(math.isfinite(v) for v in bounds):
+            return []
+
+        return self.client.search(bbox=bounds, limit=limit, **(query or {}))
 
     def tile(
         self,
@@ -189,7 +247,12 @@ class PyCSWBackend(BaseBackend):
             mosaic_assets = list(reversed(mosaic_assets))
 
         def _reader(item: Dict[str, Any], x: int, y: int, z: int, **kwargs: Any):
-            with self.reader(item, tms=self.tms, **self.reader_options) as src_dst:
+            with self.reader(
+                item,
+                tms=self.tms,
+                fallback_crs=self.alt_search_crs,
+                **self.reader_options,
+            ) as src_dst:
                 return src_dst.tile(x, y, z, **kwargs)
 
         return mosaic_reader(mosaic_assets, _reader, tile_x, tile_y, tile_z, **kwargs)
@@ -211,7 +274,9 @@ class PyCSWBackend(BaseBackend):
             raise NoAssetFoundError(f"No assets found for point ({lon},{lat})")
 
         def _reader(item: Dict[str, Any], lon: float, lat: float, **kwargs: Any):
-            with self.reader(item, **self.reader_options) as src_dst:
+            with self.reader(
+                item, fallback_crs=self.alt_search_crs, **self.reader_options
+            ) as src_dst:
                 return src_dst.point(lon, lat, **kwargs)
 
         # STAC items are unhashable, so pair results into a list rather than a dict.
@@ -245,7 +310,9 @@ class PyCSWBackend(BaseBackend):
             mosaic_assets = list(reversed(mosaic_assets))
 
         def _reader(item: Dict[str, Any], bbox: BBox, **kwargs: Any):
-            with self.reader(item, **self.reader_options) as src_dst:
+            with self.reader(
+                item, fallback_crs=self.alt_search_crs, **self.reader_options
+            ) as src_dst:
                 return src_dst.part(bbox, **kwargs)
 
         return mosaic_reader(
@@ -290,7 +357,9 @@ class PyCSWBackend(BaseBackend):
             mosaic_assets = list(reversed(mosaic_assets))
 
         def _reader(item: Dict[str, Any], shape: Dict, **kwargs: Any):
-            with self.reader(item, **self.reader_options) as src_dst:
+            with self.reader(
+                item, fallback_crs=self.alt_search_crs, **self.reader_options
+            ) as src_dst:
                 return src_dst.feature(shape, **kwargs)
 
         return mosaic_reader(
