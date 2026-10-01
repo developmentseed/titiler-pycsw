@@ -286,11 +286,7 @@ class PyCSWSTACClient:
     def _next_request(
         payload: Dict[str, Any], seen_hrefs: Set[str]
     ) -> Optional[PageRequest]:
-        """Build the follow-up request from a `rel=next` link, if there is one.
-
-        pycsw puts the offset in the link's href; for a `POST` search it also
-        echoes the original search body back in the link's `body`.
-        """
+        """Build the follow-up request from a `rel=next` link, if there is one."""
         for link in payload.get("links", []):
             if link.get("rel") != "next":
                 continue
