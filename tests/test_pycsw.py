@@ -1,6 +1,7 @@
 """Unit tests for titiler.pycsw (pycsw STAC API mocked with respx)."""
 
 import json
+import logging
 
 import httpx
 import pytest
@@ -387,3 +388,170 @@ def test_app_maps_invalid_filter_to_400(monkeypatch):
         )
         assert r.status_code == 400, r.text
         assert "collections" in r.json()["detail"]
+
+
+def _page(ids, next_href=None, matched=None, method=None, body=None):
+    """Build a FeatureCollection page, optionally carrying a `rel=next` link."""
+    links = [{"rel": "self", "href": f"{STAC_URL}/search"}]
+    if next_href:
+        link = {"rel": "next", "href": next_href}
+        if method:
+            link["method"] = method
+        if body is not None:
+            link["body"] = body
+        links.append(link)
+
+    return {
+        "type": "FeatureCollection",
+        "numberMatched": matched if matched is not None else len(ids),
+        "numberReturned": len(ids),
+        "features": [{**ITEM, "id": i} for i in ids],
+        "links": links,
+    }
+
+
+@respx.mock
+def test_search_follows_next_until_limit():
+    """A server capping records per page is paged through up to `limit`."""
+    respx.get(f"{STAC_URL}/search", params={"offset": "2"}).mock(
+        return_value=httpx.Response(
+            200,
+            json=_page(["c", "d"], next_href=f"{STAC_URL}/search?offset=4", matched=6),
+        )
+    )
+    respx.get(f"{STAC_URL}/search", params={"offset": "4"}).mock(
+        return_value=httpx.Response(200, json=_page(["e", "f"], matched=6))
+    )
+    respx.get(f"{STAC_URL}/search").mock(
+        return_value=httpx.Response(
+            200,
+            json=_page(["a", "b"], next_href=f"{STAC_URL}/search?offset=2", matched=6),
+        )
+    )
+
+    client = PyCSWSTACClient(STAC_URL, client=httpx.Client())
+    features = client.search(bbox=(0, 0, 10, 10), limit=6)
+
+    assert [f["id"] for f in features] == ["a", "b", "c", "d", "e", "f"]
+
+
+@respx.mock
+def test_search_stops_at_limit_mid_page():
+    """Pagination stops as soon as `limit` is met and truncates the last page."""
+    respx.get(f"{STAC_URL}/search").mock(
+        return_value=httpx.Response(
+            200,
+            json=_page(
+                ["a", "b", "c"], next_href=f"{STAC_URL}/search?offset=3", matched=99
+            ),
+        )
+    )
+
+    client = PyCSWSTACClient(STAC_URL, client=httpx.Client())
+    features = client.search(bbox=(0, 0, 10, 10), limit=2)
+
+    assert [f["id"] for f in features] == ["a", "b"]
+
+
+@respx.mock
+def test_search_honours_max_pages(caplog):
+    """max_pages bounds tile latency and says so instead of silently truncating."""
+    respx.get(f"{STAC_URL}/search", params={"offset": "1"}).mock(
+        return_value=httpx.Response(
+            200,
+            json=_page(["b"], next_href=f"{STAC_URL}/search?offset=2", matched=500),
+        )
+    )
+    respx.get(f"{STAC_URL}/search").mock(
+        return_value=httpx.Response(
+            200,
+            json=_page(["a"], next_href=f"{STAC_URL}/search?offset=1", matched=500),
+        )
+    )
+
+    client = PyCSWSTACClient(STAC_URL, client=httpx.Client(), max_pages=2)
+    with caplog.at_level(logging.WARNING, logger="titiler.pycsw.client"):
+        features = client.search(bbox=(0, 0, 10, 10), limit=500)
+
+    assert [f["id"] for f in features] == ["a", "b"]
+    assert "max_pages=2" in caplog.text
+    assert "500" in caplog.text
+
+
+@respx.mock
+def test_search_stops_on_repeated_next_link():
+    """A server echoing the same next link must not spin forever."""
+    route = respx.get(f"{STAC_URL}/search").mock(
+        return_value=httpx.Response(
+            200,
+            json=_page(["a"], next_href=f"{STAC_URL}/search?offset=1", matched=99),
+        )
+    )
+
+    client = PyCSWSTACClient(STAC_URL, client=httpx.Client(), max_pages=50)
+    features = client.search(bbox=(0, 0, 10, 10), limit=99)
+
+    assert [f["id"] for f in features] == ["a"]
+    assert route.call_count == 2
+
+
+@respx.mock
+def test_search_deduplicates_items_across_pages():
+    """Unstable server ordering must not feed the same item to the mosaic twice."""
+    respx.get(f"{STAC_URL}/search", params={"offset": "2"}).mock(
+        return_value=httpx.Response(200, json=_page(["b", "c"], matched=3))
+    )
+    respx.get(f"{STAC_URL}/search").mock(
+        return_value=httpx.Response(
+            200,
+            json=_page(["a", "b"], next_href=f"{STAC_URL}/search?offset=2", matched=3),
+        )
+    )
+
+    client = PyCSWSTACClient(STAC_URL, client=httpx.Client())
+    features = client.search(bbox=(0, 0, 10, 10), limit=10)
+
+    assert [f["id"] for f in features] == ["a", "b", "c"]
+
+
+@respx.mock
+def test_search_paginates_post_with_link_body():
+    """A filtered search pages via POST, reusing the body pycsw echoes back."""
+    original = {"op": "like", "args": [{"property": "identifier"}, "%"]}
+    respx.get(f"{STAC_URL}/queryables").mock(
+        return_value=httpx.Response(200, json=QUERYABLES)
+    )
+    page_two = respx.post(f"{STAC_URL}/search", params={"offset": "1"}).mock(
+        return_value=httpx.Response(200, json=_page(["b"], matched=2))
+    )
+    respx.post(f"{STAC_URL}/search").mock(
+        return_value=httpx.Response(
+            200,
+            json=_page(
+                ["a"],
+                next_href=f"{STAC_URL}/search?offset=1",
+                matched=2,
+                method="POST",
+                body={"limit": 1, "filter": original, "filter-lang": "cql2-json"},
+            ),
+        )
+    )
+
+    client = PyCSWSTACClient(STAC_URL, client=httpx.Client())
+    features = client.search(bbox=(0, 0, 10, 10), filter=original, limit=2)
+
+    assert [f["id"] for f in features] == ["a", "b"]
+    assert page_two.calls.last.request.method == "POST"
+    assert json.loads(page_two.calls.last.request.content)["filter"] == original
+
+
+@respx.mock
+def test_search_without_next_link_is_a_single_request():
+    """An uncapped catalogue still costs exactly one round trip."""
+    route = respx.get(f"{STAC_URL}/search").mock(
+        return_value=httpx.Response(200, json=_page(["a", "b"], matched=2))
+    )
+
+    client = PyCSWSTACClient(STAC_URL, client=httpx.Client())
+    assert len(client.search(bbox=(0, 0, 10, 10), limit=100)) == 2
+    assert route.call_count == 1

@@ -110,9 +110,11 @@ class PyCSWSearchOptions(DefaultDependency):
             ge=1,
             le=10_000,
             description=(
-                "Max number of items to pull from pycsw per request. The "
-                "client-side analogue of pgstac's `items_limit`; there is no "
-                "server-side skip-covered/exit-when-full optimisation."
+                "Max number of items to mosaic for this request. The client-side "
+                "analogue of pgstac's `items_limit`; there is no server-side "
+                "skip-covered/exit-when-full optimisation. pycsw caps records per "
+                "response, so reaching this may take several `rel=next` hops, "
+                "bounded by `TITILER_PYCSW_MAX_PAGES`."
             ),
         ),
     ] = pycsw_settings.default_limit

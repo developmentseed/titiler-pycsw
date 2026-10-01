@@ -1,6 +1,7 @@
 """titiler.pycsw STAC API client."""
 
-from typing import Any, Dict, List, Optional, Set
+import logging
+from typing import Any, Dict, List, NamedTuple, Optional, Set
 
 import httpx
 from cachetools import TTLCache, cached
@@ -8,6 +9,8 @@ from cachetools.keys import hashkey
 from rio_tiler.types import BBox
 
 from titiler.pycsw.settings import CacheSettings
+
+logger = logging.getLogger(__name__)
 
 cache_config = CacheSettings()
 
@@ -61,6 +64,15 @@ STAC_TO_PYCSW_HINTS = {
 }
 
 
+class PageRequest(NamedTuple):
+    """One HTTP request in a paginated search."""
+
+    method: str
+    url: str
+    body: Optional[Dict[str, Any]] = None
+    params: Optional[Dict[str, Any]] = None
+
+
 class PyCSWSTACError(Exception):
     """pycsw STAC API returned an error response."""
 
@@ -107,6 +119,7 @@ class PyCSWSTACClient:
         url: str,
         client: Optional[httpx.Client] = None,
         timeout: float = 30.0,
+        max_pages: int = 10,
     ) -> None:
         """Initialize the client.
 
@@ -114,11 +127,13 @@ class PyCSWSTACClient:
             url: base URL of the pycsw STAC API, e.g. `https://host/stac`.
             client: pre-configured `httpx.Client` to share a connection pool with.
             timeout: request timeout in seconds, used when `client` is not given.
+            max_pages: most `rel=next` hops to follow before giving up on `limit`.
 
         """
         self.url = url.rstrip("/")
         self._client = client or httpx.Client(timeout=timeout)
         self._owns_client = client is None
+        self.max_pages = max_pages
 
     def close(self) -> None:
         """Close the underlying HTTP client if we own it."""
@@ -187,22 +202,73 @@ class PyCSWSTACClient:
         sortby: Optional[str] = None,
         limit: int = 100,
     ) -> List[Dict[str, Any]]:
-        """Run a STAC item search and return Item dicts.
-
-        CQL2-JSON travels in the request body, so a `filter` switches the search
-        to `POST /search`; everything else goes through `GET /search`. A `filter`
-        composes with `bbox`, `collections`, `datetime` and `ids` rather than
-        replacing them, so the spatial constraint still narrows each tile.
-        """
+        """Run a STAC item search, following `rel=next` until `limit` is met."""
         if filter is not None:
             self.validate_filter(filter)
-            body = self._post_body(
-                bbox, datetime, collections, ids, filter, filter_lang, sortby, limit
+            request = PageRequest(
+                "POST",
+                f"{self.url}/search",
+                body=self._post_body(
+                    bbox, datetime, collections, ids, filter, filter_lang, sortby, limit
+                ),
             )
-            resp = self._client.post(f"{self.url}/search", json=body)
         else:
-            params = self._get_params(bbox, datetime, collections, ids, sortby, limit)
-            resp = self._client.get(f"{self.url}/search", params=params)
+            request = PageRequest(
+                "GET",
+                f"{self.url}/search",
+                params=self._get_params(
+                    bbox, datetime, collections, ids, sortby, limit
+                ),
+            )
+
+        features: List[Dict[str, Any]] = []
+        seen_ids: Set[str] = set()
+        seen_hrefs: Set[str] = set()
+        pages = 0
+
+        while True:
+            payload = self._fetch(request)
+            page = payload.get("features", [])
+            pages += 1
+
+            for item in page:
+                # offset paging can repeat an item when server ordering is unstable
+                item_id = item.get("id")
+                if item_id is not None:
+                    if item_id in seen_ids:
+                        continue
+                    seen_ids.add(item_id)
+                features.append(item)
+
+            if len(features) >= limit or not page:
+                break
+
+            next_request = self._next_request(payload, seen_hrefs)
+            if next_request is None:
+                break
+
+            if pages >= self.max_pages:
+                logger.warning(
+                    "pycsw search stopped after max_pages=%d with %d of %s matched "
+                    "items; raise TITILER_PYCSW_MAX_PAGES or lower `limit`",
+                    self.max_pages,
+                    len(features),
+                    payload.get("numberMatched", "?"),
+                )
+                break
+
+            request = next_request
+
+        return features[:limit]
+
+    def _fetch(self, request: PageRequest) -> Dict[str, Any]:
+        """Issue one page request and return the decoded FeatureCollection."""
+        if request.method == "POST":
+            resp = self._client.post(
+                request.url, params=request.params, json=request.body
+            )
+        else:
+            resp = self._client.get(request.url, params=request.params)
 
         if resp.status_code >= 500:
             raise PyCSWSTACServerError(
@@ -214,7 +280,32 @@ class PyCSWSTACClient:
                 f"pycsw STAC search failed ({resp.status_code}): {resp.text[:ERROR_BODY_CHARS]}"
             )
 
-        return resp.json().get("features", [])
+        return resp.json()
+
+    @staticmethod
+    def _next_request(
+        payload: Dict[str, Any], seen_hrefs: Set[str]
+    ) -> Optional[PageRequest]:
+        """Build the follow-up request from a `rel=next` link, if there is one.
+
+        pycsw puts the offset in the link's href; for a `POST` search it also
+        echoes the original search body back in the link's `body`.
+        """
+        for link in payload.get("links", []):
+            if link.get("rel") != "next":
+                continue
+
+            href = link.get("href")
+            # a server that hands back a link it already gave us would loop forever
+            if not href or href in seen_hrefs:
+                return None
+
+            seen_hrefs.add(href)
+            method = str(link.get("method") or "GET").upper()
+
+            return PageRequest(method, href, body=link.get("body"))
+
+        return None
 
     @staticmethod
     def _post_body(

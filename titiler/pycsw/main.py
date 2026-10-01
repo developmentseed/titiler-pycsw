@@ -34,6 +34,7 @@ async def lifespan(app: FastAPI):
     app.state.pycsw_client = PyCSWSTACClient(
         url=pycsw_settings.stac_api_url,
         client=http_client,
+        max_pages=pycsw_settings.max_pages,
     )
     try:
         yield

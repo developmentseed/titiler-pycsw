@@ -39,6 +39,9 @@ class PyCSWSettings(BaseSettings):
     default_sortby: str = "-datetime"
     request_timeout: Annotated[float, Field(ge=0.0)] = 30.0
 
+    # bounds the sequential `rel=next` round trips one tile can incur
+    max_pages: Annotated[int, Field(ge=1, le=1_000)] = 10
+
     model_config = SettingsConfigDict(
         env_prefix="TITILER_PYCSW_",
         env_file=".env",
