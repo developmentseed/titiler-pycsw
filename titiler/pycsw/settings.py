@@ -1,6 +1,6 @@
 """titiler.pycsw API settings."""
 
-from typing import Annotated, List
+from typing import Annotated, List, Optional
 
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
@@ -41,6 +41,9 @@ class PyCSWSettings(BaseSettings):
 
     # bounds the sequential `rel=next` round trips one tile can incur
     max_pages: Annotated[int, Field(ge=1, le=1_000)] = 10
+
+    # base for assets published as server paths; empty uses the catalogue origin
+    asset_base_url: Optional[str] = None
 
     model_config = SettingsConfigDict(
         env_prefix="TITILER_PYCSW_",

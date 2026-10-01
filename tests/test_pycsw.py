@@ -555,3 +555,62 @@ def test_search_without_next_link_is_a_single_request():
     client = PyCSWSTACClient(STAC_URL, client=httpx.Client())
     assert len(client.search(bbox=(0, 0, 10, 10), limit=100)) == 2
     assert route.call_count == 1
+
+
+def test_resolve_href_only_rewrites_relative_paths():
+    """Absolute hrefs are left alone; server paths gain the catalogue origin."""
+    from titiler.pycsw.reader import resolve_href
+
+    base = "https://host.example"
+    assert resolve_href("/data/x.tif", base) == "https://host.example/data/x.tif"
+    assert resolve_href("//cdn.example/x.tif", base) == "https://cdn.example/x.tif"
+    assert resolve_href("https://other/x.tif", base) == "https://other/x.tif"
+    assert resolve_href("s3://bucket/x.tif", base) == "s3://bucket/x.tif"
+    # a bare relative path would resolve against the item, which we do not know
+    assert resolve_href("rel/x.tif", base) == "rel/x.tif"
+    # no base configured: leave the href untouched rather than invent one
+    assert resolve_href("/data/x.tif", "") == "/data/x.tif"
+
+
+def test_default_asset_base_url_falls_back_to_catalogue_origin(monkeypatch):
+    """The origin serving the catalogue is where such assets have always been."""
+    import importlib
+
+    import titiler.pycsw.reader as reader_mod
+
+    monkeypatch.setenv("TITILER_PYCSW_STAC_API_URL", "https://cat.example/pycsw/stac")
+    monkeypatch.delenv("TITILER_PYCSW_ASSET_BASE_URL", raising=False)
+    importlib.reload(reader_mod)
+    assert reader_mod.default_asset_base_url() == "https://cat.example"
+
+    monkeypatch.setenv("TITILER_PYCSW_ASSET_BASE_URL", "https://data.example/")
+    importlib.reload(reader_mod)
+    assert reader_mod.default_asset_base_url() == "https://data.example"
+
+    monkeypatch.delenv("TITILER_PYCSW_ASSET_BASE_URL", raising=False)
+    importlib.reload(reader_mod)
+
+
+def test_reader_resolves_relative_asset_href():
+    """The reader hands rio-tiler a URL, not the catalogue's server path."""
+    from titiler.pycsw.reader import PyCSWSTACReader
+
+    item = {
+        "id": "scene-1",
+        "bbox": [0, 0, 10, 10],
+        "assets": {"asset": {"href": "/data/2026/scene.tif"}},
+    }
+    reader = PyCSWSTACReader(item, asset_base_url="https://cat.example")
+    assert (
+        reader._get_asset_info("asset")["url"]
+        == "https://cat.example/data/2026/scene.tif"
+    )
+
+
+PROJECTED_ITEM = {
+    "type": "Feature",
+    "id": "proj-1",
+    "bbox": [368221.6, 4184874.9, 385110.7, 4195264.4],
+    "properties": {"proj:code": "EPSG:2100"},
+    "assets": {"sme": {"href": "https://host/sme.tif"}},
+}

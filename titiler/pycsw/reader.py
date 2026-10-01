@@ -3,7 +3,8 @@
 Adapted from titiler.pgstac's `CustomSTACReader` (MIT License).
 """
 
-from typing import Any, Dict, Type
+from typing import Any, Dict, Optional, Type
+from urllib.parse import urlsplit
 
 import attr
 import rasterio
@@ -13,6 +14,36 @@ from rio_tiler.errors import InvalidAssetName
 from rio_tiler.io import Reader
 from rio_tiler.io.base import BaseReader, MultiBaseReader
 from rio_tiler.types import AssetInfo
+
+from titiler.pycsw.settings import PyCSWSettings
+
+pycsw_config = PyCSWSettings()
+
+
+def default_asset_base_url() -> str:
+    """Origin used to resolve root-relative asset hrefs."""
+    if pycsw_config.asset_base_url:
+        return pycsw_config.asset_base_url.rstrip("/")
+
+    parts = urlsplit(pycsw_config.stac_api_url)
+    if parts.scheme and parts.netloc:
+        return f"{parts.scheme}://{parts.netloc}"
+
+    return ""
+
+
+def resolve_href(href: str, base_url: str) -> str:
+    """Turn a root-relative or protocol-relative asset href into a URL."""
+    if not href or not base_url:
+        return href
+
+    if href.startswith("//"):
+        return f"{urlsplit(base_url).scheme or 'https'}:{href}"
+
+    if href.startswith("/"):
+        return f"{base_url}{href}"
+
+    return href
 
 
 @attr.s
@@ -31,6 +62,8 @@ class PyCSWSTACReader(MultiBaseReader):
 
     reader: Type[BaseReader] = attr.ib(default=Reader)
     reader_options: Dict = attr.ib(factory=dict)
+
+    asset_base_url: Optional[str] = attr.ib(factory=default_asset_base_url)
 
     ctx: Any = attr.ib(default=rasterio.Env)
 
@@ -54,7 +87,9 @@ class PyCSWSTACReader(MultiBaseReader):
             raise InvalidAssetName(f"{asset} is not valid")
 
         asset_meta = self.input["assets"][asset]
-        info = AssetInfo(url=asset_meta["href"])
+        info = AssetInfo(
+            url=resolve_href(asset_meta["href"], self.asset_base_url or "")
+        )
 
         if "file:header_size" in asset_meta:
             info["env"] = {
