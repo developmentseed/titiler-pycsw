@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional, Tuple, Type
 import attr
 import httpx
 import pyproj
+import rasterio.errors
 from cachetools import TTLCache, cached
 from cachetools.keys import hashkey
 from cogeo_mosaic.backends import BaseBackend
@@ -36,6 +37,7 @@ from titiler.pycsw.client import (
     BBOX_PRECISION,
     PyCSWSTACClient,
     PyCSWSTACServerError,
+    unique_by_id,
 )
 from titiler.pycsw.reader import PyCSWSTACReader
 from titiler.pycsw.settings import CacheSettings, PyCSWSettings, RetrySettings
@@ -185,19 +187,9 @@ class PyCSWBackend(BaseBackend):
         if self.alt_search_crs:
             items += self._search_alt_crs(xmin, ymin, xmax, ymax, query, limit)
 
-        seen = set()
-        keep = []
-        for item in items:
-            if not (item.get("bbox") and item.get("assets")):
-                continue
-            item_id = item.get("id")
-            if item_id is not None:
-                if item_id in seen:
-                    continue
-                seen.add(item_id)
-            keep.append(item)
+        readable = [item for item in items if item.get("bbox") and item.get("assets")]
 
-        return keep
+        return unique_by_id(readable, set())
 
     def _search_alt_crs(
         self,
@@ -210,25 +202,25 @@ class PyCSWBackend(BaseBackend):
     ) -> List[Dict[str, Any]]:
         """Second search with the bounds transformed into `alt_search_crs`."""
         try:
-            alt = pyproj.CRS.from_user_input(self.alt_search_crs)
-        except Exception:
-            return []
+            area = pyproj.CRS.from_user_input(self.alt_search_crs).area_of_use
+            # outside its area of use transform_bounds extrapolates rather than fails
+            if area and (
+                xmax < area.west
+                or xmin > area.east
+                or ymax < area.south
+                or ymin > area.north
+            ):
+                return []
 
-        # outside its area of use `transform_bounds` extrapolates rather than fails
-        area = alt.area_of_use
-        if area and (
-            xmax < area.west
-            or xmin > area.east
-            or ymax < area.south
-            or ymin > area.north
-        ):
-            return []
-
-        try:
             bounds = transform_bounds(
-                WGS84_CRS, CRS.from_user_input(alt.to_wkt()), xmin, ymin, xmax, ymax
+                WGS84_CRS,
+                CRS.from_user_input(self.alt_search_crs),
+                xmin,
+                ymin,
+                xmax,
+                ymax,
             )
-        except Exception:
+        except (pyproj.exceptions.CRSError, rasterio.errors.CRSError):
             return []
 
         if not all(math.isfinite(v) for v in bounds):

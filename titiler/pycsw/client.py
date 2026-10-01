@@ -118,6 +118,20 @@ def cql2_property_names(node: Any) -> Set[str]:
     return names
 
 
+def unique_by_id(items: List[Dict[str, Any]], seen: Set[str]) -> List[Dict[str, Any]]:
+    """Items whose id is not already in `seen`, which gains the ids kept."""
+    keep = []
+    for item in items:
+        item_id = item.get("id")
+        if item_id is not None:
+            if item_id in seen:
+                continue
+            seen.add(item_id)
+        keep.append(item)
+
+    return keep
+
+
 class PyCSWSTACClient:
     """Synchronous STAC item-search client for pycsw."""
 
@@ -238,21 +252,17 @@ class PyCSWSTACClient:
             page = payload.get("features", [])
             pages += 1
 
-            for item in page:
-                # offset paging can repeat an item when server ordering is unstable
-                item_id = item.get("id")
-                if item_id is not None:
-                    if item_id in seen_ids:
-                        continue
-                    seen_ids.add(item_id)
-                features.append(item)
+            # offset paging can repeat an item when server ordering is unstable
+            features.extend(unique_by_id(page, seen_ids))
 
             if len(features) >= limit or not page:
                 break
 
-            next_request = self._next_request(payload, seen_hrefs)
-            if next_request is None:
+            next_request = self._next_request(payload)
+            # a server that hands back a link it already gave us would loop forever
+            if next_request is None or next_request.url in seen_hrefs:
                 break
+            seen_hrefs.add(next_request.url)
 
             if pages >= self.max_pages:
                 logger.warning(
@@ -277,33 +287,25 @@ class PyCSWSTACClient:
         else:
             resp = self._client.get(request.url, params=request.params)
 
-        if resp.status_code >= 500:
-            raise PyCSWSTACServerError(
-                f"pycsw STAC search failed ({resp.status_code}): {resp.text[:ERROR_BODY_CHARS]}"
-            )
-
         if resp.status_code >= 400:
-            raise PyCSWSTACError(
+            error = PyCSWSTACServerError if resp.status_code >= 500 else PyCSWSTACError
+            raise error(
                 f"pycsw STAC search failed ({resp.status_code}): {resp.text[:ERROR_BODY_CHARS]}"
             )
 
         return resp.json()
 
     @staticmethod
-    def _next_request(
-        payload: Dict[str, Any], seen_hrefs: Set[str]
-    ) -> Optional[PageRequest]:
+    def _next_request(payload: Dict[str, Any]) -> Optional[PageRequest]:
         """Build the follow-up request from a `rel=next` link, if there is one."""
         for link in payload.get("links", []):
             if link.get("rel") != "next":
                 continue
 
             href = link.get("href")
-            # a server that hands back a link it already gave us would loop forever
-            if not href or href in seen_hrefs:
+            if not href:
                 return None
 
-            seen_hrefs.add(href)
             method = str(link.get("method") or "GET").upper()
 
             return PageRequest(method, href, body=link.get("body"))
