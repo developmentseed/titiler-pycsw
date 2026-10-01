@@ -2,7 +2,7 @@
 
 import json
 from dataclasses import dataclass, field
-from typing import Annotated, Any, Dict, Optional
+from typing import Annotated, Any, Dict, List, Optional
 
 from fastapi import HTTPException, Query
 from starlette.requests import Request
@@ -12,6 +12,25 @@ from titiler.pycsw.client import DEFAULT_FILTER_LANG, PyCSWSTACClient
 from titiler.pycsw.settings import PyCSWSettings
 
 pycsw_settings = PyCSWSettings()
+
+
+def split_csv(value: Optional[str]) -> List[str]:
+    """A comma-separated query value as a list, without blanks."""
+    return [part.strip() for part in (value or "").split(",") if part.strip()]
+
+
+def parse_cql2(value: Optional[str]) -> Optional[Dict[str, Any]]:
+    """Decode a CQL2-JSON filter, or reject it with a 400."""
+    if not value:
+        return None
+
+    try:
+        return json.loads(value)
+    except json.JSONDecodeError as e:
+        raise HTTPException(
+            status_code=400,
+            detail=f"`filter` must be valid CQL2-JSON: {e}",
+        ) from e
 
 
 def PyCSWQueryParams(
@@ -60,28 +79,21 @@ def PyCSWQueryParams(
         ),
     ] = pycsw_settings.default_sortby,
 ) -> Dict[str, Any]:
-    """Assemble the non-spatial pycsw STAC search parameters."""
-    query: Dict[str, Any] = {}
+    """Assemble the non-spatial pycsw STAC search parameters.
 
-    if collections:
-        query["collections"] = [c.strip() for c in collections.split(",")]
-    if ids:
-        query["ids"] = [i.strip() for i in ids.split(",")]
-    if datetime:
-        query["datetime"] = datetime
-    if sortby:
-        query["sortby"] = sortby
-    if filter:
-        try:
-            query["filter"] = json.loads(filter)
-        except json.JSONDecodeError as e:
-            raise HTTPException(
-                status_code=400,
-                detail=f"`filter` must be valid CQL2-JSON: {e}",
-            ) from e
-        query["filter_lang"] = filter_lang
+    Every `search()` parameter defaults to None and the serialisers skip falsy
+    values, so an absent parameter is simply left out of the dict.
+    """
+    query = {
+        "collections": split_csv(collections),
+        "ids": split_csv(ids),
+        "datetime": datetime,
+        "sortby": sortby,
+        "filter": parse_cql2(filter),
+        "filter_lang": filter_lang if filter else None,
+    }
 
-    return query
+    return {key: value for key, value in query.items() if value}
 
 
 @dataclass(init=False)

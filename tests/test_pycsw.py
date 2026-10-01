@@ -861,3 +861,17 @@ def test_queryable_suggestions_stay_quiet_when_unsure():
     # `datetime_range` is the trap: close enough to `datetime` to match loosely
     for name in ["nonsense_field", "eo:gsd", "proj:code", "datetime_range"]:
         assert suggest_queryable(name, known) is None, name
+
+
+def test_query_params_drop_blank_list_entries():
+    """A sloppy comma list must not send an empty id to the catalogue."""
+    query = PyCSWQueryParams(collections="a,,b", ids=" x , , y ")
+
+    assert query["collections"] == ["a", "b"]
+    assert query["ids"] == ["x", "y"]
+
+
+def test_query_params_omit_everything_not_supplied():
+    """Absent parameters are left out rather than sent as empty values."""
+    assert PyCSWQueryParams(sortby="") == {}
+    assert PyCSWQueryParams(collections=" , ", sortby="") == {}
