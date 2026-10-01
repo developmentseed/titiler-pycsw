@@ -1,12 +1,64 @@
 """titiler.pycsw STAC API client."""
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 import httpx
+from cachetools import TTLCache, cached
+from cachetools.keys import hashkey
 from rio_tiler.types import BBox
+
+from titiler.pycsw.settings import CacheSettings
+
+cache_config = CacheSettings()
 
 # how much of an error response body to keep in the raised exception
 ERROR_BODY_CHARS = 500
+
+# pycsw's query_mappings, which `GET /queryables` under-reports
+PYCSW_CORE_QUERYABLES = frozenset(
+    {
+        "anytext",
+        "bbox",
+        "cloudcover",
+        "collections",
+        "date",
+        "date_creation",
+        "date_modified",
+        "datetime",
+        "description",
+        "distancevalue",
+        "edition",
+        "geometry",
+        "identifier",
+        "instrument",
+        "keywords",
+        "off_nadir",
+        "otherconstraints",
+        "parentidentifier",
+        "platform",
+        "sensortype",
+        "time_begin",
+        "time_end",
+        "title",
+        "type",
+        "typename",
+        "updated",
+    }
+)
+
+# the STAC spellings people reach for first, and what pycsw actually calls them
+STAC_TO_PYCSW_HINTS = {
+    "collection": "collections",
+    "id": "identifier",
+    "ids": "identifier",
+    "eo:cloud_cover": "cloudcover",
+    "instruments": "instrument",
+    "view:off_nadir": "off_nadir",
+    "start_datetime": "time_begin",
+    "end_datetime": "time_end",
+    "created": "date_creation",
+    "updated_at": "updated",
+}
 
 
 class PyCSWSTACError(Exception):
@@ -17,10 +69,34 @@ class PyCSWSTACServerError(PyCSWSTACError):
     """pycsw STAC API returned a 5xx response (retryable)."""
 
 
+class PyCSWInvalidFilterError(PyCSWSTACError):
+    """`filter` referenced a property the catalogue cannot filter on."""
+
+
 PYCSW_STATUS_CODES = {
     PyCSWSTACError: 400,
     PyCSWSTACServerError: 502,
+    PyCSWInvalidFilterError: 400,
 }
+
+
+def cql2_property_names(node: Any) -> Set[str]:
+    """Collect every `{"property": ...}` name in a CQL2-JSON expression."""
+    names: Set[str] = set()
+
+    if isinstance(node, dict):
+        prop = node.get("property")
+        if isinstance(prop, str):
+            names.add(prop)
+
+        for value in node.values():
+            names |= cql2_property_names(value)
+
+    elif isinstance(node, list):
+        for value in node:
+            names |= cql2_property_names(value)
+
+    return names
 
 
 class PyCSWSTACClient:
@@ -49,6 +125,57 @@ class PyCSWSTACClient:
         if self._owns_client:
             self._client.close()
 
+    @cached(  # type: ignore
+        TTLCache(maxsize=cache_config.maxsize, ttl=cache_config.ttl),
+        key=lambda self: hashkey(self.url),
+    )
+    def queryables(self) -> Set[str]:
+        """Property names `GET /queryables` advertises as filterable."""
+        resp = self._client.get(f"{self.url}/queryables")
+
+        if resp.status_code >= 400:
+            raise PyCSWSTACError(
+                f"pycsw queryables request failed ({resp.status_code}): "
+                f"{resp.text[:ERROR_BODY_CHARS]}"
+            )
+
+        return set(resp.json().get("properties", {}))
+
+    def known_queryables(self) -> Set[str]:
+        """Advertised property names unioned with `PYCSW_CORE_QUERYABLES`."""
+        try:
+            advertised = self.queryables()
+        except (PyCSWSTACError, httpx.HTTPError, ValueError):
+            advertised = set()
+
+        return set(PYCSW_CORE_QUERYABLES) | advertised
+
+    def validate_filter(self, filter: Dict[str, Any]) -> None:
+        """Reject `filter` properties the catalogue cannot filter on."""
+        requested = cql2_property_names(filter)
+        if not requested:
+            return
+
+        known = self.known_queryables()
+        unknown = sorted(requested - known)
+        if not unknown:
+            return
+
+        hints = [
+            f"`{name}` -> `{STAC_TO_PYCSW_HINTS[name]}`"
+            for name in unknown
+            if name in STAC_TO_PYCSW_HINTS
+        ]
+        message = (
+            f"Unknown queryable(s) in `filter`: {', '.join(unknown)}. "
+            "pycsw filters on catalogue field names, not STAC property names."
+        )
+        if hints:
+            message += f" Did you mean {', '.join(hints)}?"
+        message += f" Available: {', '.join(sorted(known))}."
+
+        raise PyCSWInvalidFilterError(message)
+
     def search(
         self,
         bbox: Optional[BBox] = None,
@@ -63,9 +190,12 @@ class PyCSWSTACClient:
         """Run a STAC item search and return Item dicts.
 
         CQL2-JSON travels in the request body, so a `filter` switches the search
-        to `POST /search`; everything else goes through `GET /search`.
+        to `POST /search`; everything else goes through `GET /search`. A `filter`
+        composes with `bbox`, `collections`, `datetime` and `ids` rather than
+        replacing them, so the spatial constraint still narrows each tile.
         """
         if filter is not None:
+            self.validate_filter(filter)
             body = self._post_body(
                 bbox, datetime, collections, ids, filter, filter_lang, sortby, limit
             )

@@ -37,8 +37,13 @@ def PyCSWQueryParams(
         Query(
             description=(
                 "CQL2-JSON filter (as a JSON-encoded string). When provided, the "
-                "search is issued via `POST /stac/search`. NOTE: pycsw 3.0-dev does "
-                "not apply the filter, so results come back unfiltered."
+                "search is issued via `POST /stac/search`, and composes with "
+                "`collections`, `datetime`, `ids` and the tile's bbox. "
+                "NOTE: pycsw filters on **catalogue field names, not STAC property "
+                "names** — use `collections` (not `collection`), `cloudcover` (not "
+                "`eo:cloud_cover`), `identifier` (not `id`). `GET /queryables` on "
+                "the catalogue lists them, though it under-reports; an unknown name "
+                "is rejected with the full list of what is available."
             ),
         ),
     ] = None,

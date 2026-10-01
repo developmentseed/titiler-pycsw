@@ -220,3 +220,5 @@ __marimo__/
 # titiler-pycsw
 drafts/
 stack/data/
+.ai/
+CLAUDE.local.md

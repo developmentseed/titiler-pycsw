@@ -3,6 +3,7 @@
 import json
 
 import httpx
+import pytest
 import respx
 
 from titiler.pycsw.client import PyCSWSTACClient
@@ -25,6 +26,24 @@ ITEM = {
 }
 
 FEATURE_COLLECTION = {"type": "FeatureCollection", "features": [ITEM]}
+
+# a deliberately short list: pycsw under-reports its own queryables
+QUERYABLES = {
+    "type": "object",
+    "properties": {
+        "identifier": {"type": "string"},
+        "title": {"type": "string"},
+        "cloudcover": {},
+    },
+}
+
+
+@pytest.fixture(autouse=True)
+def _clear_queryables_cache():
+    """The queryables lookup is memoised per URL and every test shares one."""
+    PyCSWSTACClient.queryables.cache.clear()
+    yield
+    PyCSWSTACClient.queryables.cache.clear()
 
 
 @respx.mock
@@ -56,12 +75,16 @@ def test_client_get_search_builds_params():
 @respx.mock
 def test_client_post_search_when_filter():
     """A CQL2 filter switches the search to POST with a JSON body."""
+    respx.get(f"{STAC_URL}/queryables").mock(
+        return_value=httpx.Response(200, json=QUERYABLES)
+    )
     route = respx.post(f"{STAC_URL}/search").mock(
         return_value=httpx.Response(200, json=FEATURE_COLLECTION)
     )
 
     client = PyCSWSTACClient(STAC_URL, client=httpx.Client())
-    cql2 = {"op": "=", "args": [{"property": "eo:cloud_cover"}, 0]}
+    # `cloudcover`, not the STAC spelling `eo:cloud_cover`, which pycsw rejects
+    cql2 = {"op": "=", "args": [{"property": "cloudcover"}, 0]}
     features = client.search(bbox=(0, 0, 10, 10), filter=cql2, sortby="-datetime")
 
     assert len(features) == 1
@@ -249,3 +272,118 @@ def test_app_maps_pycsw_errors_to_status_codes(monkeypatch):
         )
         r = client.get("/mosaic/bbox/13,13,14,14.png", params={"assets": "cog"})
         assert r.status_code == 502, r.text
+
+
+def test_cql2_property_names_walks_nested_expressions():
+    """Property names are collected from anywhere in the CQL2 tree."""
+    from titiler.pycsw.client import cql2_property_names
+
+    assert cql2_property_names({"op": "=", "args": [{"property": "title"}, "x"]}) == {
+        "title"
+    }
+    nested = {
+        "op": "and",
+        "args": [
+            {"op": "<", "args": [{"property": "cloudcover"}, 20]},
+            {"op": "in", "args": [{"property": "collections"}, ["a", "b"]]},
+        ],
+    }
+    assert cql2_property_names(nested) == {"cloudcover", "collections"}
+    assert cql2_property_names({"op": "=", "args": [1, 2]}) == set()
+
+
+@respx.mock
+def test_queryables_union_covers_pycsw_under_reporting():
+    """`collections`/`datetime` work but are not advertised, so they must pass."""
+    from titiler.pycsw.client import PYCSW_CORE_QUERYABLES
+
+    respx.get(f"{STAC_URL}/queryables").mock(
+        return_value=httpx.Response(200, json=QUERYABLES)
+    )
+    client = PyCSWSTACClient(STAC_URL, client=httpx.Client())
+
+    known = client.known_queryables()
+    assert {"collections", "datetime", "off_nadir"} <= known
+    assert PYCSW_CORE_QUERYABLES <= known
+    assert "date_publication" not in known
+
+
+@respx.mock
+def test_validate_filter_rejects_stac_property_names():
+    """A STAC spelling is rejected up front with a pointer to the pycsw name."""
+    from titiler.pycsw.client import PyCSWInvalidFilterError
+
+    respx.get(f"{STAC_URL}/queryables").mock(
+        return_value=httpx.Response(200, json=QUERYABLES)
+    )
+    client = PyCSWSTACClient(STAC_URL, client=httpx.Client())
+
+    with pytest.raises(PyCSWInvalidFilterError) as excinfo:
+        client.search(
+            bbox=(0, 0, 10, 10),
+            filter={"op": "=", "args": [{"property": "eo:cloud_cover"}, 0]},
+        )
+
+    message = str(excinfo.value)
+    assert "eo:cloud_cover" in message
+    assert "`eo:cloud_cover` -> `cloudcover`" in message
+    assert "cloudcover" in message
+
+
+@respx.mock
+def test_validate_filter_allows_known_queryables():
+    """A valid pycsw field name reaches `POST /search` untouched."""
+    respx.get(f"{STAC_URL}/queryables").mock(
+        return_value=httpx.Response(200, json=QUERYABLES)
+    )
+    route = respx.post(f"{STAC_URL}/search").mock(
+        return_value=httpx.Response(200, json=FEATURE_COLLECTION)
+    )
+
+    client = PyCSWSTACClient(STAC_URL, client=httpx.Client())
+    cql2 = {"op": "<", "args": [{"property": "cloudcover"}, 20]}
+    assert len(client.search(bbox=(4, 4, 5, 5), filter=cql2)) == 1
+    assert json.loads(route.calls.last.request.content)["filter"] == cql2
+
+
+@respx.mock
+def test_validate_filter_degrades_when_queryables_unreachable():
+    """An unreachable /queryables must not block an otherwise valid search."""
+    respx.get(f"{STAC_URL}/queryables").mock(side_effect=httpx.ConnectError("boom"))
+    route = respx.post(f"{STAC_URL}/search").mock(
+        return_value=httpx.Response(200, json=FEATURE_COLLECTION)
+    )
+
+    client = PyCSWSTACClient(STAC_URL, client=httpx.Client())
+    cql2 = {"op": "=", "args": [{"property": "identifier"}, "scene-1"]}
+    assert len(client.search(bbox=(6, 6, 7, 7), filter=cql2)) == 1
+    assert route.called
+
+
+@respx.mock
+def test_app_maps_invalid_filter_to_400(monkeypatch):
+    """An unknown queryable surfaces as a 400 naming the valid alternatives."""
+    monkeypatch.setenv("TITILER_PYCSW_STAC_API_URL", STAC_URL)
+    respx.get(f"{STAC_URL}/queryables").mock(
+        return_value=httpx.Response(200, json=QUERYABLES)
+    )
+
+    import importlib
+
+    import titiler.pycsw.main as main_mod
+
+    importlib.reload(main_mod)
+    from starlette.testclient import TestClient
+
+    with TestClient(main_mod.app, raise_server_exceptions=False) as client:
+        r = client.get(
+            "/mosaic/bbox/21,21,22,22.png",
+            params={
+                "assets": "cog",
+                "filter": json.dumps(
+                    {"op": "=", "args": [{"property": "collection"}, "demo"]}
+                ),
+            },
+        )
+        assert r.status_code == 400, r.text
+        assert "collections" in r.json()["detail"]
