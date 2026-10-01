@@ -829,3 +829,35 @@ def test_empty_tiles_are_not_cached(monkeypatch):
         empty = client.get("/mosaic/bbox/31,31,32,32.png", params={"assets": "cog"})
         assert empty.status_code == 204
         assert empty.headers["cache-control"] == "no-store"
+
+
+def test_queryable_suggestions_stay_quiet_when_unsure():
+    """A confident wrong suggestion is worse than none.
+
+    Most STAC spellings resolve by dropping the extension prefix and matching
+    closely; the handful pycsw renames outright are tabled. Anything else gets
+    the available list and no guess.
+    """
+    from titiler.pycsw.client import PYCSW_CORE_QUERYABLES, suggest_queryable
+
+    known = set(PYCSW_CORE_QUERYABLES)
+
+    derived = {
+        "collection": "collections",
+        "eo:cloud_cover": "cloudcover",
+        "instruments": "instrument",
+        "view:off_nadir": "off_nadir",
+        "updated_at": "updated",
+    }
+    tabled = {
+        "id": "identifier",
+        "created": "date_creation",
+        "start_datetime": "time_begin",
+        "end_datetime": "time_end",
+    }
+    for name, want in {**derived, **tabled}.items():
+        assert suggest_queryable(name, known) == want, name
+
+    # `datetime_range` is the trap: close enough to `datetime` to match loosely
+    for name in ["nonsense_field", "eo:gsd", "proj:code", "datetime_range"]:
+        assert suggest_queryable(name, known) is None, name

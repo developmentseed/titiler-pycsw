@@ -1,5 +1,6 @@
 """titiler.pycsw STAC API client."""
 
+import difflib
 import logging
 from typing import Any, Dict, List, NamedTuple, Optional, Set
 
@@ -25,6 +26,7 @@ BBOX_PRECISION = 8
 DEFAULT_FILTER_LANG = "cql2-json"
 
 # pycsw's query_mappings, which `GET /queryables` under-reports
+# TODO: copied from upstream repo, to be derived from backend directly in future version
 PYCSW_CORE_QUERYABLES = frozenset(
     {
         "anytext",
@@ -56,19 +58,31 @@ PYCSW_CORE_QUERYABLES = frozenset(
     }
 )
 
-# the STAC spellings people reach for first, and what pycsw actually calls them
+# STAC renames that close matching gets wrong or misses entirely
+# TODO: copied from upstream repo, to be derived from backend directly in future version
 STAC_TO_PYCSW_HINTS = {
-    "collection": "collections",
     "id": "identifier",
-    "ids": "identifier",
-    "eo:cloud_cover": "cloudcover",
-    "instruments": "instrument",
-    "view:off_nadir": "off_nadir",
+    "created": "date_creation",
     "start_datetime": "time_begin",
     "end_datetime": "time_end",
-    "created": "date_creation",
-    "updated_at": "updated",
 }
+
+# below this, a close match is more likely to mislead than to help
+SUGGESTION_CUTOFF = 0.8
+
+
+def suggest_queryable(name: str, known: Set[str]) -> Optional[str]:
+    """The pycsw spelling of a STAC property name, where there is an obvious one."""
+    if name in STAC_TO_PYCSW_HINTS:
+        return STAC_TO_PYCSW_HINTS[name]
+
+    bare = name.split(":")[-1]
+    for probe in (bare, bare.replace("_", "")):
+        match = difflib.get_close_matches(probe, known, n=1, cutoff=SUGGESTION_CUTOFF)
+        if match:
+            return match[0]
+
+    return None
 
 
 class PageRequest(NamedTuple):
@@ -198,9 +212,9 @@ class PyCSWSTACClient:
             return
 
         hints = [
-            f"`{name}` -> `{STAC_TO_PYCSW_HINTS[name]}`"
-            for name in unknown
-            if name in STAC_TO_PYCSW_HINTS
+            f"`{name}` -> `{suggestion}`"
+            for name, suggestion in ((n, suggest_queryable(n, known)) for n in unknown)
+            if suggestion
         ]
         message = (
             f"Unknown queryable(s) in `filter`: {', '.join(unknown)}. "
