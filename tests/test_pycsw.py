@@ -801,3 +801,31 @@ def test_tile_skips_items_missing_the_requested_asset():
     # the odd item drops out; the tile still renders from the one that has it
     assert [i["id"] for i in used] == ["has-it"]
     assert image is not None
+
+
+@respx.mock
+def test_empty_tiles_are_not_cached(monkeypatch):
+    """An empty mosaic describes the search, not the tile.
+
+    Cached for an hour, a tile that came back empty during an outage stays
+    blank long after the cause is fixed — indistinguishable from a broken
+    tiler.
+    """
+    monkeypatch.setenv("TITILER_PYCSW_STAC_API_URL", STAC_URL)
+    respx.get(f"{STAC_URL}/search").mock(
+        return_value=httpx.Response(
+            200, json={"type": "FeatureCollection", "features": []}
+        )
+    )
+
+    import importlib
+
+    import titiler.pycsw.main as main_mod
+
+    importlib.reload(main_mod)
+    from starlette.testclient import TestClient
+
+    with TestClient(main_mod.app) as client:
+        empty = client.get("/mosaic/bbox/31,31,32,32.png", params={"assets": "cog"})
+        assert empty.status_code == 204
+        assert empty.headers["cache-control"] == "no-store"

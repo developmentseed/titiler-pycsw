@@ -63,6 +63,17 @@ if settings.cors_origins:
         allow_headers=["*"],
     )
 
+
+@app.middleware("http")
+async def do_not_cache_empty_tiles(request, call_next):
+    """Keep an empty mosaic out of the browser cache."""
+    response = await call_next(request)
+    if response.status_code == 204:
+        response.headers["Cache-Control"] = "no-store"
+
+    return response
+
+
 app.add_middleware(CacheControlMiddleware, cachecontrol=settings.cachecontrol)
 
 mosaic = MosaicTilerFactory(router_prefix="/mosaic", name="mosaic")
