@@ -21,7 +21,12 @@ from rasterio.crs import CRS
 from rasterio.features import bounds as feature_bounds
 from rasterio.warp import transform_bounds, transform_geom
 from rio_tiler.constants import WEB_MERCATOR_TMS, WGS84_CRS
-from rio_tiler.errors import PointOutsideBounds
+from rio_tiler.errors import (
+    InvalidAssetName,
+    MissingAssets,
+    PointOutsideBounds,
+    TileOutsideBounds,
+)
 from rio_tiler.models import ImageData
 from rio_tiler.mosaic import mosaic_reader
 from rio_tiler.tasks import MAX_THREADS, create_tasks, filter_tasks
@@ -37,6 +42,9 @@ retry_config = RetrySettings()
 pycsw_config = PyCSWSettings()
 
 RETRYABLE_EXCEPTIONS = (httpx.TransportError, PyCSWSTACServerError)
+
+# an item lacking the requested asset drops out like one that misses the tile
+MISSING_ASSET_EXCEPTIONS = (InvalidAssetName, MissingAssets)
 
 
 @attr.s
@@ -246,6 +254,10 @@ class PyCSWBackend(BaseBackend):
         if reverse:
             mosaic_assets = list(reversed(mosaic_assets))
 
+        kwargs.setdefault(
+            "allowed_exceptions", (TileOutsideBounds, *MISSING_ASSET_EXCEPTIONS)
+        )
+
         def _reader(item: Dict[str, Any], x: int, y: int, z: int, **kwargs: Any):
             with self.reader(
                 item,
@@ -280,7 +292,9 @@ class PyCSWBackend(BaseBackend):
                 return src_dst.point(lon, lat, **kwargs)
 
         # STAC items are unhashable, so pair results into a list rather than a dict.
-        allowed_exceptions = kwargs.pop("allowed_exceptions", (PointOutsideBounds,))
+        allowed_exceptions = kwargs.pop(
+            "allowed_exceptions", (PointOutsideBounds, *MISSING_ASSET_EXCEPTIONS)
+        )
         threads = kwargs.pop("threads", MAX_THREADS)
 
         tasks = create_tasks(_reader, mosaic_assets, threads, lon, lat, **kwargs)
@@ -308,6 +322,10 @@ class PyCSWBackend(BaseBackend):
 
         if reverse:
             mosaic_assets = list(reversed(mosaic_assets))
+
+        kwargs.setdefault(
+            "allowed_exceptions", (TileOutsideBounds, *MISSING_ASSET_EXCEPTIONS)
+        )
 
         def _reader(item: Dict[str, Any], bbox: BBox, **kwargs: Any):
             with self.reader(
@@ -355,6 +373,10 @@ class PyCSWBackend(BaseBackend):
 
         if reverse:
             mosaic_assets = list(reversed(mosaic_assets))
+
+        kwargs.setdefault(
+            "allowed_exceptions", (TileOutsideBounds, *MISSING_ASSET_EXCEPTIONS)
+        )
 
         def _reader(item: Dict[str, Any], shape: Dict, **kwargs: Any):
             with self.reader(

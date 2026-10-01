@@ -9,8 +9,18 @@ import respx
 
 from titiler.pycsw.client import PyCSWSTACClient
 from titiler.pycsw.dependencies import PyCSWQueryParams
+from titiler.pycsw.reader import PyCSWSTACReader
 
 STAC_URL = "http://pycsw.test/stac"
+
+
+def _fake_image():
+    """A minimal ImageData standing in for a real raster read."""
+    import numpy
+    from rio_tiler.models import ImageData
+
+    return ImageData(numpy.ma.MaskedArray(numpy.zeros((1, 256, 256), dtype="uint8")))
+
 
 ITEM = {
     "type": "Feature",
@@ -742,3 +752,52 @@ def test_backend_alt_crs_skips_bboxes_outside_the_crs_area():
         backend.get_assets(-179.9, -89.9, -179.0, -89.0, limit=10)
 
     assert route.call_count == 1
+
+
+@respx.mock
+def test_tile_skips_items_missing_the_requested_asset():
+    """A heterogeneous collection must not fail the tile on one odd item.
+
+    Planetek's AG-SM holds 3 items with an `sme` asset alongside 28 keyed
+    `SME_<date>`. rio-tiler allows only TileOutsideBounds by default, so an
+    item lacking the asset raised InvalidAssetName and took the whole tile
+    down with it.
+    """
+    from unittest.mock import patch
+
+    from rio_tiler.errors import InvalidAssetName
+
+    from titiler.pycsw.backend import PyCSWBackend
+
+    has_asset = {**ITEM, "id": "has-it"}
+    lacks_asset = {
+        **ITEM,
+        "id": "lacks-it",
+        "assets": {"something_else": {"href": "s3://bucket/other.tif"}},
+    }
+    respx.get(f"{STAC_URL}/search").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "type": "FeatureCollection",
+                "features": [lacks_asset, has_asset],
+            },
+        )
+    )
+
+    client = PyCSWSTACClient(STAC_URL, client=httpx.Client())
+    with PyCSWBackend(client=client) as backend:
+
+        def fake_tile(self, *args, **kwargs):
+            if "cog" not in self.input["assets"]:
+                raise InvalidAssetName("cog is not valid")
+            return _fake_image()
+
+        with patch.object(PyCSWSTACReader, "tile", fake_tile):
+            image, used = backend.tile(
+                2318, 1580, 12, limit=10, assets=["cog"], threads=0
+            )
+
+    # the odd item drops out; the tile still renders from the one that has it
+    assert [i["id"] for i in used] == ["has-it"]
+    assert image is not None
