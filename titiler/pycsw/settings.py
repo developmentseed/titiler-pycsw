@@ -79,7 +79,7 @@ class CacheSettings(BaseSettings):
 
 
 class RetrySettings(BaseSettings):
-    """Retry settings for transient pycsw/network failures."""
+    """Retry settings for transient failures."""
 
     retry: Annotated[int, Field(ge=0)] = 3
     delay: Annotated[float, Field(ge=0.0)] = 0.0
