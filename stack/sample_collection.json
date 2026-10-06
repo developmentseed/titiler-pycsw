@@ -1,0 +1,13 @@
+{
+  "type": "Collection",
+  "stac_version": "1.0.0",
+  "id": "demo",
+  "title": "titiler-pycsw demo collection",
+  "description": "Sample collection of COG-backed STAC items for the titiler-pycsw POC.",
+  "license": "proprietary",
+  "extent": {
+    "spatial": {"bbox": [[-180, -90, 180, 90]]},
+    "temporal": {"interval": [[null, null]]}
+  },
+  "links": []
+}
