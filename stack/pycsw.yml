@@ -1,0 +1,43 @@
+# Minimal pycsw 3.x configuration for the titiler-pycsw POC stack.
+# Enables OGC API - Records + STAC API over a SQLite repository.
+# Reference: https://docs.pycsw.org/en/latest/configuration.html
+
+server:
+  url: http://localhost:8000
+  mimetype: application/xml; charset=UTF-8
+  encoding: UTF-8
+  language: en-US
+  maxrecords: 100
+  # expose OGC API - Records / STAC
+  ogc_schemas_base: http://schemas.opengis.net
+  pretty_print: true
+
+logging:
+  level: INFO
+
+manager:
+  transactions: true        # allow STAC/OARec transactional inserts
+  allowed_ips:
+    - '127.0.0.1'
+    - '172.0.0.0/8'         # docker network
+
+metadata:
+  identification:
+    title: titiler-pycsw POC catalogue
+    description: Sample pycsw catalogue serving STAC items with COG assets.
+    keywords:
+      - catalogue
+      - STAC
+      - COG
+    fees: None
+    accessconstraints: None
+  provider:
+    name: titiler-pycsw POC
+    url: http://localhost:8000
+  contact:
+    name: POC
+    role: pointOfContact
+
+repository:
+  database: sqlite:////data/records.db
+  table: records

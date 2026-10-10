@@ -216,3 +216,10 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# titiler-pycsw
+drafts/
+stack/data/
+.ai/
+CLAUDE.local.md
+.demo-logs/
